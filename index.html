@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>NOVA SYNTH</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js"></script>
 <style>
   :root {
     --bg: #0a0a0f;
@@ -654,127 +655,19 @@ const activeNotes = new Map();
 const MAX_POLY = 8;
 const env = { a: 0.01, d: 0.1, s: 0.7, r: 0.3 };
 
-// ─── PIANO MODE ───────────────────────────────────────────────────────────────
-// Salamander Grand Piano V3 via gleitz/midi-js-soundfonts (GitHub CDN)
-// Samples are base64-encoded mp3s, one per note, fetched on demand.
-let pianoMode = false;
-const pianoBuffers = {};   // midi note -> AudioBuffer
-let pianoLoaded = false;
-let pianoLoading = false;
-
-// Salamander has samples at every 3rd semitone. We load these and pitch-shift between them.
-// Notes available: A0=21, then every 3 semitones up to C8=108
-const PIANO_BASE_NOTES = [];
-for (let n = 21; n <= 108; n += 3) PIANO_BASE_NOTES.push(n);
-// Add exact note names gleitz uses (A0..C8 in their naming)
-const NOTE_NAMES_SHARP = ['C','Cs','D','Ds','E','F','Fs','G','Gs','A','As','B'];
-function midiToGleitz(n) {
-  return NOTE_NAMES_SHARP[n % 12] + Math.floor(n / 12 - 1);
-}
-
-const GLEITZ_BASE = 'https://gleitz.github.io/midi-js-soundfonts/Salamander/';
-
-async function loadPianoSamples() {
-  if (pianoLoading || pianoLoaded) return;
-  pianoLoading = true;
-
-  const statusEl = document.getElementById('piano-status');
-  const barWrap  = document.getElementById('load-bar-wrap');
-  const bar      = document.getElementById('load-bar');
-  statusEl.textContent = 'LOADING SALAMANDER GRAND PIANO…';
-  statusEl.className = 'visible';
-  barWrap.className = 'load-bar-wrap visible';
-
-  // Only load every 3rd note — pitch-shifting fills the gaps
-  const notesToLoad = PIANO_BASE_NOTES;
-  let loaded = 0;
-
-  await Promise.all(notesToLoad.map(async (note) => {
-    const name = midiToGleitz(note);
-    const url = GLEITZ_BASE + name + '.mp3';
-    try {
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const arrayBuf = await resp.arrayBuffer();
-      pianoBuffers[note] = await ctx.decodeAudioData(arrayBuf);
-    } catch(e) {
-      // silently skip missing notes
-    }
-    loaded++;
-    bar.style.width = Math.round((loaded / notesToLoad.length) * 100) + '%';
-  }));
-
-  pianoLoaded = true;
-  pianoLoading = false;
-  statusEl.textContent = '✓ SALAMANDER GRAND PIANO V3 READY';
-  statusEl.className = 'visible ready';
-  setTimeout(() => {
-    statusEl.className = '';
-    barWrap.className = 'load-bar-wrap';
-  }, 2000);
-}
-
-// Find the nearest loaded sample and return {buffer, detune}
-function getNearestPianoSample(note) {
-  let best = null, bestDist = Infinity;
-  for (const n of PIANO_BASE_NOTES) {
-    if (pianoBuffers[n]) {
-      const d = Math.abs(n - note);
-      if (d < bestDist) { bestDist = d; best = n; }
-    }
-  }
-  if (!best) return null;
-  return { buffer: pianoBuffers[best], detune: (note - best) * 100 }; // cents
-}
-
-function noteOnPiano(note, velocity) {
-  if (!pianoLoaded) return;
-  const sample = getNearestPianoSample(note);
-  if (!sample) return;
-
-  const source = ctx.createBufferSource();
-  source.buffer = sample.buffer;
-  source.detune.value = sample.detune;
-
-  const gain = ctx.createGain();
-  const vel = velocity / 127;
-  // Piano: quick attack, natural decay from sample
-  gain.gain.setValueAtTime(0, ctx.currentTime);
-  gain.gain.linearRampToValueAtTime(vel, ctx.currentTime + 0.005);
-
-  let chain = gain;
-  if (reverbActive) { chain.connect(reverbNode); reverbNode.connect(filterNode); }
-  chain.connect(filterNode);
-  source.connect(gain);
-  source.start();
-
-  // Store source so we can stop it on noteOff
-  activeNotes.set(note, { osc: source, gain, freq: 440 * Math.pow(2,(note-69)/12), velocity, isPiano: true });
-  updateUI(note, 440 * Math.pow(2,(note-69)/12), velocity);
-  highlightKey(note, true);
-  updatePolyCount();
-}
-
 function initAudio() {
   if (ctx) return;
   ctx = new (window.AudioContext || window.webkitAudioContext)();
-
   masterGain = ctx.createGain();
   masterGain.gain.value = 0.7;
-
   analyser = ctx.createAnalyser();
   analyser.fftSize = 512;
-
   filterNode = ctx.createBiquadFilter();
   filterNode.type = 'lowpass';
   filterNode.frequency.value = 8000;
   filterNode.Q.value = 1;
-
-  // Reverb (simple convolver with impulse)
   reverbNode = ctx.createConvolver();
-  reverbNode.buffer = makeReverb(ctx, 2, 2, false);
-
-  // Chorus (delay + LFO)
+  reverbNode.buffer = makeReverb(ctx, 2, 2);
   const chorusDelay = ctx.createDelay();
   chorusDelay.delayTime.value = 0.025;
   const chorusLFO = ctx.createOscillator();
@@ -785,16 +678,11 @@ function initAudio() {
   chorusDepth.connect(chorusDelay.delayTime);
   chorusLFO.start();
   chorusNode = chorusDelay;
-
-  // Distortion
   distNode = ctx.createWaveShaper();
   distNode.curve = makeDistCurve(200);
-
-  // Chain: filter → master → analyser → dest
   filterNode.connect(masterGain);
   masterGain.connect(analyser);
   analyser.connect(ctx.destination);
-
   document.getElementById('led-audio').classList.add('on');
 }
 
@@ -818,55 +706,31 @@ function makeDistCurve(amount) {
   return curve;
 }
 
-function getOutput() {
-  // Build chain depending on active FX
-  let node = filterNode;
-  // we always end at filterNode input; just route osc->gain->filterNode
-  return filterNode;
-}
-
 function noteOn(note, velocity) {
   initAudio();
   if (ctx.state === 'suspended') ctx.resume();
   if (pianoMode) { noteOnPiano(note, velocity); return; }
   if (activeNotes.has(note)) noteOff(note);
   if (activeNotes.size >= MAX_POLY) {
-    // steal oldest
     const oldest = activeNotes.keys().next().value;
     noteOff(oldest);
   }
-
   const freq = 440 * Math.pow(2, (note - 69) / 12);
   const vel = velocity / 127;
-
   const osc = ctx.createOscillator();
   osc.type = waveType;
   osc.frequency.value = freq;
-
   const gain = ctx.createGain();
   gain.gain.setValueAtTime(0, ctx.currentTime);
   gain.gain.linearRampToValueAtTime(vel, ctx.currentTime + env.a);
   gain.gain.linearRampToValueAtTime(vel * env.s, ctx.currentTime + env.a + env.d);
-
   let chain = gain;
-
-  if (distActive) {
-    chain.connect(distNode);
-    chain = distNode;
-  }
-  if (chorusActive) {
-    chain.connect(chorusNode);
-    chain = chorusNode;
-  }
-  if (reverbActive) {
-    chain.connect(reverbNode);
-    reverbNode.connect(filterNode);
-  }
+  if (distActive)   { chain.connect(distNode);   chain = distNode; }
+  if (chorusActive) { chain.connect(chorusNode);  chain = chorusNode; }
+  if (reverbActive) { chain.connect(reverbNode);  reverbNode.connect(filterNode); }
   chain.connect(filterNode);
-
   osc.connect(gain);
   osc.start();
-
   activeNotes.set(note, { osc, gain, freq, velocity });
   updateUI(note, freq, velocity);
   highlightKey(note, true);
@@ -874,19 +738,14 @@ function noteOn(note, velocity) {
 }
 
 function noteOff(note) {
+  if (pianoMode) { noteOffPiano(note); return; }
   if (!activeNotes.has(note)) return;
-  const { osc, gain, isPiano } = activeNotes.get(note);
+  const { osc, gain } = activeNotes.get(note);
   const now = ctx.currentTime;
   gain.gain.cancelScheduledValues(now);
   gain.gain.setValueAtTime(gain.gain.value, now);
-  if (isPiano) {
-    // Piano: longer natural release
-    gain.gain.linearRampToValueAtTime(0, now + 1.2);
-    try { osc.stop(now + 1.25); } catch(e) {}
-  } else {
-    gain.gain.linearRampToValueAtTime(0, now + env.r);
-    osc.stop(now + env.r + 0.05);
-  }
+  gain.gain.linearRampToValueAtTime(0, now + env.r);
+  osc.stop(now + env.r + 0.05);
   activeNotes.delete(note);
   highlightKey(note, false);
   updatePolyCount();
@@ -910,215 +769,92 @@ function updateUI(note, freq, vel) {
 }
 
 function updatePolyCount() {
-  document.getElementById('poly-count').textContent = activeNotes.size;
+  const total = activeNotes.size + (pianoMode ? pianoActive.size : 0);
+  document.getElementById('poly-count').textContent = total;
 }
 
-// ─── KEYBOARD VIS (C3=48 to C5=72) ───────────────────────────────────────────
-const START_NOTE = 48;
-const TOTAL_KEYS = 25;
-const BLACK_PATTERN = [false,true,false,true,false,false,true,false,true,false,true,false]; // C D E F G A B
+// ─── PIANO MODE ───────────────────────────────────────────────────────────────
+// Uses soundfont-player (danigb) which loads gleitz/midi-js-soundfonts.
+// The MusyngKite soundfont includes a high-quality acoustic grand piano.
+// soundfont-player handles base64 decoding, AudioBuffer caching, and pitch-shift.
 
-function buildKeyboard() {
-  const vis = document.getElementById('kb-vis');
-  for (let i = 0; i < TOTAL_KEYS; i++) {
-    const note = START_NOTE + i;
-    const isBlack = BLACK_PATTERN[note % 12];
-    const div = document.createElement('div');
-    div.className = 'kb-key' + (isBlack ? ' black' : '');
-    div.dataset.note = note;
-    vis.appendChild(div);
-  }
-}
-buildKeyboard();
+let pianoMode    = false;
+let pianoInstr   = null;   // soundfont-player instrument instance
+let pianoLoaded  = false;
+let pianoLoading = false;
+const pianoActive = new Map(); // note -> soundfont node (for noteOff)
 
-function highlightKey(note, on) {
-  const el = document.querySelector(`.kb-key[data-note="${note}"]`);
-  if (el) el.classList.toggle('active', on);
-}
+async function loadPianoSamples() {
+  if (pianoLoading || pianoLoaded) return;
+  pianoLoading = true;
 
-// ─── OSCILLOSCOPE ─────────────────────────────────────────────────────────────
-const canvas = document.getElementById('scope');
-const scopeCtx = canvas.getContext('2d');
+  const statusEl = document.getElementById('piano-status');
+  const barWrap  = document.getElementById('load-bar-wrap');
+  const bar      = document.getElementById('load-bar');
+  statusEl.textContent = 'LOADING SALAMANDER GRAND PIANO…';
+  statusEl.className = 'visible';
+  barWrap.className = 'load-bar-wrap visible';
+  bar.style.width = '10%';
 
-function resizeCanvas() {
-  canvas.width = canvas.offsetWidth * window.devicePixelRatio;
-  canvas.height = canvas.offsetHeight * window.devicePixelRatio;
-}
-resizeCanvas();
-window.addEventListener('resize', resizeCanvas);
-
-function drawScope() {
-  requestAnimationFrame(drawScope);
-  if (!analyser) {
-    scopeCtx.fillStyle = '#08080f';
-    scopeCtx.fillRect(0,0,canvas.width,canvas.height);
-    return;
-  }
-  const buf = new Uint8Array(analyser.frequencyBinCount);
-  analyser.getByteTimeDomainData(buf);
-
-  const w = canvas.width, h = canvas.height;
-  scopeCtx.fillStyle = '#08080f';
-  scopeCtx.fillRect(0,0,w,h);
-
-  // grid
-  scopeCtx.strokeStyle = 'rgba(0,255,231,0.05)';
-  scopeCtx.lineWidth = 1;
-  for (let x = 0; x < w; x += w/8) { scopeCtx.beginPath(); scopeCtx.moveTo(x,0); scopeCtx.lineTo(x,h); scopeCtx.stroke(); }
-  scopeCtx.beginPath(); scopeCtx.moveTo(0,h/2); scopeCtx.lineTo(w,h/2); scopeCtx.stroke();
-
-  scopeCtx.beginPath();
-  scopeCtx.strokeStyle = '#00ffe7';
-  scopeCtx.lineWidth = 2 * window.devicePixelRatio;
-  scopeCtx.shadowColor = '#00ffe7';
-  scopeCtx.shadowBlur = 6;
-
-  for (let i = 0; i < buf.length; i++) {
-    const x = (i / buf.length) * w;
-    const y = ((buf[i] / 128) - 1) * (h * 0.45) + h / 2;
-    i === 0 ? scopeCtx.moveTo(x,y) : scopeCtx.lineTo(x,y);
-  }
-  scopeCtx.stroke();
-  scopeCtx.shadowBlur = 0;
-
-  // VU
-  const rms = Math.sqrt(buf.reduce((a,v)=>a+((v/128)-1)**2,0)/buf.length);
-  const fills = document.querySelectorAll('.vu-fill');
-  fills.forEach((f,i) => {
-    const level = Math.max(0, Math.min(100, rms * 500 - i * 12));
-    f.style.height = level + '%';
-  });
-}
-drawScope();
-
-// ─── MIDI ─────────────────────────────────────────────────────────────────────
-async function initMIDI() {
-  if (!navigator.requestMIDIAccess) {
-    setMidiStatus('WEB MIDI NOT SUPPORTED IN THIS BROWSER', 'error');
-    return;
-  }
   try {
-    const midi = await navigator.requestMIDIAccess({ sysex: false });
-    handleMIDIAccess(midi);
-    midi.onstatechange = e => handleMIDIAccess(midi);
-  } catch(e) {
-    setMidiStatus('MIDI ACCESS DENIED: ' + e.message, 'error');
-  }
-}
-
-function handleMIDIAccess(midi) {
-  let found = 0;
-  midi.inputs.forEach(input => {
-    input.onmidimessage = onMIDIMessage;
-    found++;
-  });
-  if (found > 0) {
-    setMidiStatus(`✓ ${found} MIDI INPUT${found>1?'S':''} CONNECTED`, 'connected');
-    document.getElementById('led-midi').classList.add('on');
-  } else {
-    setMidiStatus('NO MIDI DEVICES FOUND — PLUG IN KEYBOARD & RELOAD', '');
-    document.getElementById('led-midi').classList.remove('on');
-  }
-}
-
-function onMIDIMessage(e) {
-  const [status, note, velocity] = e.data;
-  const cmd = status & 0xf0;
-  document.getElementById('last-msg').textContent = `${status.toString(16).toUpperCase()} ${note} ${velocity}`;
-
-  if (cmd === 0x90 && velocity > 0) {
-    if (typeof window._arpNoteOn === 'function') window._arpNoteOn(note, velocity);
-    else noteOn(note, velocity);
-  } else if (cmd === 0x80 || (cmd === 0x90 && velocity === 0)) {
-    if (typeof window._arpNoteOff === 'function') window._arpNoteOff(note);
-    else noteOff(note);
-  } else if (cmd === 0xb0) {
-    // CC: 1=mod, 7=vol, 74=filter
-    if (note === 7)  { masterGain.gain.value = velocity/127; document.getElementById('master-vol').value = velocity/127; document.getElementById('master-vol-val').textContent = Math.round(velocity/127*100)+'%'; }
-    if (note === 74) { const f = 80 + (velocity/127)*17920; filterNode.frequency.value = f; document.getElementById('filter-freq').value = f; document.getElementById('filter-freq-val').textContent = Math.round(f)+' Hz'; }
-  } else if (cmd === 0xe0) {
-    // Pitch bend
-    const bend = ((e.data[2] << 7 | e.data[1]) - 8192) / 8192;
-    activeNotes.forEach(({osc, freq}) => {
-      osc.frequency.value = freq * Math.pow(2, bend * 2/12);
+    // soundfont-player is loaded via CDN <script> tag in <head>
+    // Salamander is available under MusyngKite soundfont set
+    pianoInstr = await Soundfont.instrument(ctx, 'acoustic_grand_piano', {
+      soundfont: 'MusyngKite',
+      gain: 2.0,
+      destination: filterNode,
     });
+    bar.style.width = '100%';
+    pianoLoaded  = true;
+    pianoLoading = false;
+    statusEl.textContent = '✓ GRAND PIANO READY';
+    statusEl.className = 'visible ready';
+    setTimeout(() => {
+      statusEl.className = '';
+      barWrap.className = 'load-bar-wrap';
+    }, 2000);
+  } catch(e) {
+    pianoLoading = false;
+    statusEl.textContent = '✗ FAILED TO LOAD: ' + e.message;
+    statusEl.className = 'visible error';
+    barWrap.className = 'load-bar-wrap';
   }
 }
 
-function setMidiStatus(msg, cls) {
-  const el = document.getElementById('midi-status');
-  el.textContent = msg;
-  el.className = cls;
+function noteOnPiano(note, velocity) {
+  if (!pianoLoaded || !pianoInstr) return;
+  // Stop any existing note
+  if (pianoActive.has(note)) {
+    try { pianoActive.get(note).stop(); } catch(e) {}
+    pianoActive.delete(note);
+  }
+  const node = pianoInstr.play(note, ctx.currentTime, {
+    gain: velocity / 127,
+    duration: 20,   // long duration — we stop it manually on noteOff
+  });
+  pianoActive.set(note, node);
+  const freq = 440 * Math.pow(2, (note - 69) / 12);
+  updateUI(note, freq, velocity);
+  highlightKey(note, true);
+  updatePolyCount();
 }
 
-// ─── CONTROLS ─────────────────────────────────────────────────────────────────
-document.querySelectorAll('.wave-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.wave-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    waveType = btn.dataset.wave;
-    activeNotes.forEach(({osc, isPiano}) => { if (!isPiano) try { osc.type = waveType; } catch(e){} });
-  });
-});
-
-// ─── PIANO / SYNTH MODE TOGGLE ────────────────────────────────────────────────
-document.getElementById('mode-synth').addEventListener('click', () => {
-  pianoMode = false;
-  document.getElementById('mode-synth').classList.add('active');
-  document.getElementById('mode-piano').classList.remove('active');
-  document.getElementById('osc-panel').style.display = '';
-});
-
-document.getElementById('mode-piano').addEventListener('click', () => {
-  pianoMode = true;
-  document.getElementById('mode-piano').classList.add('active');
-  document.getElementById('mode-synth').classList.remove('active');
-  document.getElementById('osc-panel').style.display = 'none';
-  if (!pianoLoaded && !pianoLoading) loadPianoSamples();
-});
-
-function bindEnv(id, key, fmt) {
-  const el = document.getElementById(id);
-  const val = document.getElementById(id+'-val');
-  el.addEventListener('input', () => {
-    env[key] = parseFloat(el.value);
-    val.textContent = fmt(env[key]);
-  });
+function noteOffPiano(note) {
+  if (!pianoActive.has(note)) return;
+  const node = pianoActive.get(note);
+  // Fade out over 1s for natural piano release
+  try {
+    node.stop(ctx.currentTime + 1.0);
+  } catch(e) {}
+  pianoActive.delete(note);
+  highlightKey(note, false);
+  // Update poly count using combined maps
+  setTimeout(updatePolyCount, 50);
+  if (pianoActive.size === 0 && activeNotes.size === 0) {
+    document.getElementById('note-name').textContent = '---';
+    document.getElementById('freq-display').textContent = '---';
+  }
 }
-bindEnv('env-a','a', v=>v.toFixed(3)+'s');
-bindEnv('env-d','d', v=>v.toFixed(2)+'s');
-bindEnv('env-s','s', v=>v.toFixed(2));
-bindEnv('env-r','r', v=>v.toFixed(2)+'s');
-
-document.getElementById('filter-freq').addEventListener('input', e => {
-  const v = parseFloat(e.target.value);
-  if (filterNode) filterNode.frequency.value = v;
-  document.getElementById('filter-freq-val').textContent = Math.round(v)+' Hz';
-});
-document.getElementById('filter-q').addEventListener('input', e => {
-  const v = parseFloat(e.target.value);
-  if (filterNode) filterNode.Q.value = v;
-  document.getElementById('filter-q-val').textContent = v.toFixed(1);
-});
-document.getElementById('master-vol').addEventListener('input', e => {
-  const v = parseFloat(e.target.value);
-  if (masterGain) masterGain.gain.value = v;
-  document.getElementById('master-vol-val').textContent = Math.round(v*100)+'%';
-});
-
-document.getElementById('fx-reverb').addEventListener('click', function() {
-  reverbActive = !reverbActive;
-  this.classList.toggle('active', reverbActive);
-});
-document.getElementById('fx-chorus').addEventListener('click', function() {
-  chorusActive = !chorusActive;
-  this.classList.toggle('active', chorusActive);
-});
-document.getElementById('fx-dist').addEventListener('click', function() {
-  distActive = !distActive;
-  this.classList.toggle('active', distActive);
-});
-
 
 // ─── ARPEGGIATOR ──────────────────────────────────────────────────────────────
 let arpActive   = false;
