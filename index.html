@@ -10,7 +10,7 @@
   :root {
     --bg:#0a0a0f; --panel:#111118; --border:#1e1e2e;
     --accent:#00ffe7; --accent2:#ff2d78; --accent3:#ffe600;
-    --glow:rgba(0,255,231,0.18); --text:#c8d6e5; --dim:#4a5568; --knob-bg:#1a1a28;
+    --text:#c8d6e5; --dim:#4a5568; --knob-bg:#1a1a28;
   }
   *{box-sizing:border-box;margin:0;padding:0;}
   body{background:var(--bg);font-family:'Share Tech Mono',monospace;color:var(--text);
@@ -22,7 +22,6 @@
     pointer-events:none;z-index:0;}
   .everything{position:relative;z-index:1;width:100%;max-width:480px;}
 
-  /* HEADER */
   header{display:flex;align-items:center;justify-content:space-between;
     padding:10px 14px 8px;border-bottom:1px solid var(--border);margin-bottom:12px;}
   .logo{font-family:'Orbitron',sans-serif;font-weight:900;font-size:1.5rem;
@@ -30,19 +29,20 @@
     text-shadow:0 0 18px var(--accent),0 0 40px rgba(0,255,231,0.3);}
   .logo span{color:var(--accent2);}
   .status-row{display:flex;gap:8px;align-items:center;}
-  .led{width:10px;height:10px;border-radius:50%;background:var(--dim);transition:background 0.15s,box-shadow 0.15s;}
+  .led{width:10px;height:10px;border-radius:50%;background:var(--dim);
+    transition:background 0.15s,box-shadow 0.15s;}
   .led.on{background:var(--accent);box-shadow:0 0 8px var(--accent);}
   .led.red.on{background:var(--accent2);box-shadow:0 0 8px var(--accent2);}
+  .led.yellow{background:var(--dim);}
+  .led.yellow.on{background:var(--accent3);box-shadow:0 0 8px var(--accent3);}
   .status-label{font-size:0.6rem;color:var(--dim);letter-spacing:0.1em;}
 
-  /* MIDI STATUS */
   #midi-status{text-align:center;font-size:0.65rem;letter-spacing:0.12em;
     padding:6px 12px;border:1px solid var(--border);border-radius:4px;
     margin-bottom:12px;color:var(--dim);transition:all 0.3s;}
-  #midi-status.connected{color:var(--accent);border-color:var(--accent);text-shadow:0 0 8px var(--accent);}
+  #midi-status.connected{color:var(--accent);border-color:var(--accent);}
   #midi-status.error{color:var(--accent2);border-color:var(--accent2);}
 
-  /* NOTE DISPLAY */
   .note-display{background:var(--panel);border:1px solid var(--border);border-radius:6px;
     padding:10px 16px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;}
   .note-name{font-family:'Orbitron',sans-serif;font-size:2.2rem;font-weight:700;
@@ -50,14 +50,40 @@
   .freq-display{font-size:0.7rem;color:var(--dim);text-align:right;line-height:1.7;}
   .freq-display .big{font-size:1rem;color:var(--text);}
   .vu-wrap{display:flex;gap:3px;align-items:flex-end;height:36px;}
-  .vu-bar{width:8px;background:var(--border);border-radius:2px;overflow:hidden;display:flex;flex-direction:column-reverse;}
+  .vu-bar{width:8px;background:var(--border);border-radius:2px;overflow:hidden;
+    display:flex;flex-direction:column-reverse;}
   .vu-fill{width:100%;background:var(--accent);transition:height 0.05s;height:0%;}
 
-  /* SECTIONS */
   .section{background:var(--panel);border:1px solid var(--border);border-radius:6px;
     padding:12px 14px;margin-bottom:10px;}
   .section-title{font-family:'Orbitron',sans-serif;font-size:0.55rem;letter-spacing:0.2em;
-    color:var(--dim);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;}
+    color:var(--dim);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;
+    display:flex;justify-content:space-between;align-items:center;}
+
+  /* SCOPE */
+  .scope-wrap{position:relative;margin-bottom:10px;}
+  canvas#scope{width:100%;height:100px;display:block;border-radius:4px;background:#08080f;
+    border:1px solid var(--border);}
+  .scope-controls{display:flex;gap:6px;margin-bottom:6px;align-items:center;}
+  .scope-btn{background:var(--knob-bg);border:1px solid var(--border);border-radius:4px;
+    color:var(--dim);font-family:'Share Tech Mono',monospace;font-size:0.6rem;
+    letter-spacing:0.1em;padding:5px 10px;cursor:pointer;transition:all 0.15s;
+    -webkit-tap-highlight-color:transparent;}
+  .scope-btn.active{border-color:var(--accent);color:var(--accent);
+    background:rgba(0,255,231,0.07);}
+  .scope-btn.freeze.active{border-color:var(--accent3);color:var(--accent3);
+    background:rgba(255,230,0,0.07);}
+  .scope-label-x{position:absolute;bottom:4px;left:0;right:0;
+    display:flex;justify-content:space-between;padding:0 4px;
+    font-size:0.45rem;color:rgba(0,255,231,0.4);pointer-events:none;}
+  .scope-label-y{position:absolute;top:0;bottom:0;left:4px;
+    display:flex;flex-direction:column;justify-content:space-between;padding:4px 0;
+    font-size:0.45rem;color:rgba(0,255,231,0.4);pointer-events:none;}
+
+  /* KEYBOARD HINT */
+  .kb-hint{font-size:0.55rem;color:var(--dim);text-align:center;
+    letter-spacing:0.08em;padding:4px 0 0;}
+  .kb-hint span{color:var(--accent3);}
 
   /* MODE TOGGLE */
   .mode-toggle{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px;}
@@ -68,7 +94,6 @@
   .mode-btn.active{border-color:var(--accent3);color:var(--accent3);
     background:rgba(255,230,0,0.07);box-shadow:0 0 10px rgba(255,230,0,0.15);}
 
-  /* PIANO STATUS */
   #piano-status{font-size:0.6rem;letter-spacing:0.12em;color:var(--dim);
     text-align:center;padding:6px;display:none;}
   #piano-status.visible{display:block;}
@@ -79,7 +104,6 @@
   .load-bar-wrap.visible{display:block;}
   .load-bar{height:100%;width:0%;background:var(--accent3);border-radius:2px;transition:width 0.2s;}
 
-  /* WAVE BUTTONS */
   .wave-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;}
   .wave-btn{background:var(--knob-bg);border:1px solid var(--border);border-radius:5px;
     color:var(--dim);font-family:'Share Tech Mono',monospace;font-size:0.65rem;
@@ -91,23 +115,21 @@
     background:rgba(0,255,231,0.07);box-shadow:0 0 10px rgba(0,255,231,0.15);}
   .wave-btn.active svg{opacity:1;}
 
-  /* ENVELOPE */
   .env-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
   .env-knob{display:flex;flex-direction:column;align-items:center;gap:6px;}
   .env-label{font-size:0.55rem;letter-spacing:0.15em;color:var(--dim);}
   .env-val{font-size:0.65rem;color:var(--accent3);min-width:40px;text-align:center;}
   input[type=range]{-webkit-appearance:none;appearance:none;background:var(--border);
-    border-radius:2px;outline:none;writing-mode:vertical-lr;direction:rtl;width:4px;height:70px;cursor:pointer;}
+    border-radius:2px;outline:none;writing-mode:vertical-lr;direction:rtl;
+    width:4px;height:70px;cursor:pointer;}
   input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;
     border-radius:50%;background:var(--accent);box-shadow:0 0 6px var(--accent);cursor:pointer;}
   input[type=range].accent2::-webkit-slider-thumb{background:var(--accent2);box-shadow:0 0 6px var(--accent2);}
   input[type=range].horiz{writing-mode:horizontal-tb;direction:ltr;width:100%;height:4px;}
 
-  /* FILTER */
   .knob-label{font-size:0.55rem;letter-spacing:0.12em;color:var(--dim);}
   .knob-val{font-size:0.65rem;color:var(--accent);}
 
-  /* FX */
   .fx-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
   .fx-btn{background:var(--knob-bg);border:1px solid var(--border);border-radius:5px;
     color:var(--dim);font-family:'Share Tech Mono',monospace;font-size:0.6rem;
@@ -127,23 +149,22 @@
   .arp-power.active{border-color:var(--accent2);color:var(--accent2);
     background:rgba(255,45,120,0.08);box-shadow:0 0 12px rgba(255,45,120,0.2);}
   .arp-bpm-display{font-family:'Orbitron',sans-serif;font-size:1.1rem;font-weight:700;
-    color:var(--accent3);text-shadow:0 0 10px var(--accent3);letter-spacing:0.05em;}
+    color:var(--accent3);text-shadow:0 0 10px var(--accent3);}
   .arp-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;}
   .arp-label{font-size:0.55rem;letter-spacing:0.15em;color:var(--dim);margin-bottom:4px;}
   .arp-select{width:100%;background:var(--knob-bg);border:1px solid var(--border);
     border-radius:4px;color:var(--text);font-family:'Share Tech Mono',monospace;
-    font-size:0.65rem;letter-spacing:0.08em;padding:6px 8px;cursor:pointer;
+    font-size:0.65rem;padding:6px 8px;cursor:pointer;
     -webkit-appearance:none;appearance:none;}
-  .arp-select:focus{outline:none;border-color:var(--accent);}
   .arp-steps{display:flex;gap:4px;justify-content:center;padding:6px 0 2px;}
   .arp-step-dot{width:10px;height:10px;border-radius:50%;background:var(--border);
     transition:background 0.05s,box-shadow 0.05s;flex-shrink:0;}
   .arp-step-dot.active{background:var(--accent2);box-shadow:0 0 8px var(--accent2);}
 
   /* KEYBOARD VIS */
-  .kb-vis{display:flex;gap:2px;justify-content:center;padding:6px 0;position:relative;height:42px;}
+  .kb-vis{display:flex;gap:2px;justify-content:center;padding:6px 0;height:42px;}
   .kb-key{flex:1;border-radius:0 0 3px 3px;background:#e8e8f0;border:1px solid #999;
-    transition:background 0.05s;position:relative;}
+    transition:background 0.05s;}
   .kb-key.black{background:#1a1a2e;border-color:#000;height:28px;margin:0 -4px;z-index:2;flex:0.6;}
   .kb-key.active{background:var(--accent) !important;box-shadow:0 0 8px var(--accent);}
   .kb-key.black.active{background:var(--accent2) !important;box-shadow:0 0 8px var(--accent2);}
@@ -151,25 +172,23 @@
     padding:4px 2px 0;letter-spacing:0.1em;}
   .poly-info span{color:var(--accent3);}
 
-  /* OSCILLOSCOPE */
-  canvas{width:100%;height:70px;display:block;border-radius:4px;background:#08080f;
-    border:1px solid var(--border);margin-bottom:10px;}
-
   /* STARTUP OVERLAY */
   #start-overlay{position:fixed;inset:0;background:rgba(10,10,15,0.97);z-index:999;
     display:flex;flex-direction:column;align-items:center;justify-content:center;
     cursor:pointer;-webkit-tap-highlight-color:transparent;}
-  #start-overlay .start-logo{font-family:'Orbitron',sans-serif;font-weight:900;font-size:2.2rem;
+  .start-logo{font-family:'Orbitron',sans-serif;font-weight:900;font-size:2.2rem;
     letter-spacing:0.15em;color:#00ffe7;
     text-shadow:0 0 24px #00ffe7,0 0 60px rgba(0,255,231,0.3);margin-bottom:12px;}
-  #start-overlay .start-logo span{color:#ff2d78;}
-  #start-overlay .start-sub{font-family:'Share Tech Mono',monospace;font-size:0.75rem;
+  .start-logo span{color:#ff2d78;}
+  .start-sub{font-family:'Share Tech Mono',monospace;font-size:0.75rem;
     letter-spacing:0.2em;color:#4a5568;margin-bottom:48px;}
-  #start-overlay .start-btn{border:2px solid #00ffe7;border-radius:6px;padding:18px 48px;
-    font-family:'Orbitron',sans-serif;font-size:0.9rem;font-weight:700;letter-spacing:0.2em;
-    color:#00ffe7;background:rgba(0,255,231,0.07);animation:pulse 2s ease-in-out infinite;}
-  @keyframes pulse{0%,100%{box-shadow:0 0 10px rgba(0,255,231,0.3);}50%{box-shadow:0 0 30px rgba(0,255,231,0.7);}}
-  #start-overlay .start-note{margin-top:24px;font-family:'Share Tech Mono',monospace;
+  .start-btn{border:2px solid #00ffe7;border-radius:6px;padding:18px 48px;
+    font-family:'Orbitron',sans-serif;font-size:0.9rem;font-weight:700;
+    letter-spacing:0.2em;color:#00ffe7;background:rgba(0,255,231,0.07);
+    animation:pulse 2s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{box-shadow:0 0 10px rgba(0,255,231,0.3);}
+    50%{box-shadow:0 0 30px rgba(0,255,231,0.7);}}
+  .start-note{margin-top:24px;font-family:'Share Tech Mono',monospace;
     font-size:0.6rem;letter-spacing:0.12em;color:#2a3548;}
 
   footer{margin-top:16px;font-size:0.55rem;letter-spacing:0.15em;color:var(--dim);
@@ -194,6 +213,8 @@
       <div class="status-label">MIDI</div>
       <div class="led red" id="led-audio"></div>
       <div class="status-label">AUDIO</div>
+      <div class="led yellow" id="led-sustain"></div>
+      <div class="status-label">SUS</div>
     </div>
   </header>
 
@@ -201,7 +222,7 @@
 
   <div class="note-display">
     <div class="note-name" id="note-name">---</div>
-    <div class="vu-wrap" id="vu-meter">
+    <div class="vu-wrap">
       <div class="vu-bar"><div class="vu-fill"></div></div>
       <div class="vu-bar"><div class="vu-fill"></div></div>
       <div class="vu-bar"><div class="vu-fill"></div></div>
@@ -215,7 +236,24 @@
     </div>
   </div>
 
-  <canvas id="scope"></canvas>
+  <!-- OSCILLOSCOPE / FFT -->
+  <div class="section">
+    <div class="section-title">
+      <span id="scope-title">// OSCILLOSCOPE</span>
+      <div style="display:flex;gap:6px;">
+        <button class="scope-btn active" id="btn-scope">SCOPE</button>
+        <button class="scope-btn" id="btn-fft">FFT</button>
+        <button class="scope-btn freeze" id="btn-freeze">❚❚ FREEZE</button>
+      </div>
+    </div>
+    <div class="scope-wrap">
+      <canvas id="scope"></canvas>
+      <div class="scope-label-y" id="scope-label-y">
+        <span>+1</span><span>0</span><span>-1</span>
+      </div>
+      <div class="scope-label-x" id="scope-label-x"></div>
+    </div>
+  </div>
 
   <!-- SOURCE -->
   <div class="section">
@@ -357,11 +395,15 @@
 
   <!-- KEYBOARD VIS -->
   <div class="section">
-    <div class="section-title">// MIDI KEYBOARD (25 KEYS — C3 TO C5)</div>
+    <div class="section-title">// KEYBOARD  <span style="color:var(--dim);font-size:0.5rem">C3–C5 · MIDI + COMPUTER KEYS</span></div>
     <div class="kb-vis" id="kb-vis"></div>
     <div class="poly-info">
       <div>POLY: <span id="poly-count">0</span>/8</div>
       <div>LAST: <span id="last-msg">---</span></div>
+    </div>
+    <div class="kb-hint" style="margin-top:8px">
+      <span>A S D F G H J K L</span> = white keys &nbsp;|&nbsp; <span>W E T Y U O P</span> = black keys<br>
+      <span>Z</span> = oct down &nbsp;|&nbsp; <span>X</span> = oct up
     </div>
   </div>
 
@@ -369,7 +411,7 @@
 </div>
 
 <script>
-// ─── GLOBALS ─────────────────────────────────────────────────────────────────
+// ─── GLOBALS ──────────────────────────────────────────────────────────────────
 let ctx = null;
 let masterGain, filterNode, reverbNode, chorusDelay, distNode, analyser;
 let reverbActive = false, chorusActive = false, distActive = false;
@@ -380,20 +422,38 @@ const env = { a: 0.01, d: 0.1, s: 0.7, r: 0.3 };
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 
 // ─── PIANO MODE ───────────────────────────────────────────────────────────────
-let pianoMode   = false;
-let pianoInstr  = null;
-let pianoLoaded = false;
+let pianoMode    = false;
+let pianoInstr   = null;
+let pianoLoaded  = false;
 let pianoLoading = false;
+let pianoGain    = 14.0;
 const pianoActive = new Map();
 
+// ─── SUSTAIN PEDAL ────────────────────────────────────────────────────────────
+let sustainOn = false;
+const sustainedNotes = new Set(); // notes held by sustain after key release
+
 // ─── ARPEGGIATOR ──────────────────────────────────────────────────────────────
-let arpOn       = false;
-let arpTimer    = null;
-let arpStep     = 0;
-let arpHeld     = new Map();
-let arpHeldOrder = 0;
+let arpOn          = false;
+let arpTimer       = null;
+let arpStep        = 0;
+let arpHeld        = new Map();
+let arpHeldOrder   = 0;
 let arpCurrentNote = null;
-const ARP_STEPS = 16;
+const ARP_STEPS    = 16;
+
+// ─── COMPUTER KEYBOARD ────────────────────────────────────────────────────────
+let computerOctave = 4; // base octave, Z/X to shift
+const KEY_NOTE_MAP = {
+  'a':0,'w':1,'s':2,'e':3,'d':4,'f':5,'t':6,'g':7,'y':8,'h':9,'u':10,'j':11,
+  'k':12,'o':13,'l':14,'p':15
+};
+const computerHeld = new Set();
+
+// ─── SCOPE STATE ──────────────────────────────────────────────────────────────
+let scopeMode   = 'scope'; // 'scope' | 'fft'
+let scopeFrozen = false;
+let frozenBuf   = null;
 
 // ─── AUDIO INIT ───────────────────────────────────────────────────────────────
 function initAudio() {
@@ -402,7 +462,8 @@ function initAudio() {
   masterGain = ctx.createGain();
   masterGain.gain.value = 0.7;
   analyser = ctx.createAnalyser();
-  analyser.fftSize = 512;
+  analyser.fftSize = 2048;
+  analyser.smoothingTimeConstant = 0.6;
   filterNode = ctx.createBiquadFilter();
   filterNode.type = 'lowpass';
   filterNode.frequency.value = 8000;
@@ -424,6 +485,7 @@ function initAudio() {
   masterGain.connect(analyser);
   analyser.connect(ctx.destination);
   document.getElementById('led-audio').classList.add('on');
+  updateScopeXLabels();
 }
 
 function makeReverb(duration, decay) {
@@ -439,8 +501,8 @@ function makeReverb(duration, decay) {
 function makeDistCurve(amount) {
   const n = 256, curve = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    const x = i*2/n - 1;
-    curve[i] = (Math.PI + amount) * x / (Math.PI + amount * Math.abs(x));
+    const x = i*2/n-1;
+    curve[i] = (Math.PI+amount)*x/(Math.PI+amount*Math.abs(x));
   }
   return curve;
 }
@@ -475,6 +537,11 @@ function noteOn(note, velocity) {
 }
 
 function noteOff(note) {
+  // If sustain is on, hold the note
+  if (sustainOn && !pianoMode) {
+    sustainedNotes.add(note);
+    return;
+  }
   if (pianoMode) { noteOffPiano(note); return; }
   if (!activeNotes.has(note)) return;
   const { osc, gain } = activeNotes.get(note);
@@ -487,6 +554,29 @@ function noteOff(note) {
   highlightKey(note, false);
   updatePolyCount();
   if (activeNotes.size === 0) clearDisplay();
+}
+
+// ─── SUSTAIN PEDAL ────────────────────────────────────────────────────────────
+function setSustain(on) {
+  sustainOn = on;
+  document.getElementById('led-sustain').classList.toggle('on', on);
+  if (!on) {
+    // Release all sustained notes
+    sustainedNotes.forEach(note => {
+      if (!activeNotes.has(note)) return;
+      const { osc, gain } = activeNotes.get(note);
+      const now = ctx.currentTime;
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(gain.gain.value, now);
+      gain.gain.linearRampToValueAtTime(0, now + env.r);
+      try { osc.stop(now + env.r + 0.05); } catch(e) {}
+      activeNotes.delete(note);
+      highlightKey(note, false);
+    });
+    sustainedNotes.clear();
+    updatePolyCount();
+    if (activeNotes.size === 0) clearDisplay();
+  }
 }
 
 // ─── PIANO NOTE ON/OFF ────────────────────────────────────────────────────────
@@ -522,7 +612,10 @@ async function loadPianoSamples() {
 function noteOnPiano(note, velocity) {
   if (!pianoLoaded || !pianoInstr) return;
   if (pianoActive.has(note)) { try { pianoActive.get(note).stop(); } catch(e) {} pianoActive.delete(note); }
-  const node = pianoInstr.play(note, ctx.currentTime, { gain: (velocity / 127) * pianoGain, duration: 20 });
+  const node = pianoInstr.play(note, ctx.currentTime, {
+    gain: (velocity / 127) * pianoGain,
+    duration: 20
+  });
   pianoActive.set(note, node);
   updateUI(note, midiToFreq(note), velocity);
   highlightKey(note, true);
@@ -530,6 +623,7 @@ function noteOnPiano(note, velocity) {
 }
 
 function noteOffPiano(note) {
+  if (sustainOn) { sustainedNotes.add(note); return; }
   if (!pianoActive.has(note)) return;
   try { pianoActive.get(note).stop(ctx.currentTime + 1.0); } catch(e) {}
   pianoActive.delete(note);
@@ -546,7 +640,7 @@ function arpGetBeatMs() {
 }
 
 function arpBuildSeq() {
-  const notes = [...arpHeld.keys()].sort((a,b) => a - b);
+  const notes = [...arpHeld.keys()].sort((a,b) => a-b);
   if (!notes.length) return [];
   const octaves = parseInt(document.getElementById('arp-octaves').value);
   const pattern = document.getElementById('arp-pattern').value;
@@ -590,7 +684,23 @@ function arpTick() {
 }
 
 function arpSilence() {
-  if (arpCurrentNote !== null) { noteOff(arpCurrentNote); arpCurrentNote = null; }
+  if (arpCurrentNote !== null) {
+    if (pianoMode) noteOffPiano(arpCurrentNote);
+    else {
+      if (activeNotes.has(arpCurrentNote)) {
+        const { osc, gain } = activeNotes.get(arpCurrentNote);
+        const now = ctx.currentTime;
+        gain.gain.cancelScheduledValues(now);
+        gain.gain.setValueAtTime(gain.gain.value, now);
+        gain.gain.linearRampToValueAtTime(0, now + 0.05);
+        try { osc.stop(now + 0.1); } catch(e) {}
+        activeNotes.delete(arpCurrentNote);
+        highlightKey(arpCurrentNote, false);
+        updatePolyCount();
+      }
+    }
+    arpCurrentNote = null;
+  }
 }
 
 function arpStart() {
@@ -606,34 +716,24 @@ function arpStop() {
   document.querySelectorAll('.arp-step-dot').forEach(d => d.classList.remove('active'));
 }
 
-// ─── MIDI ROUTING (arp-aware) ─────────────────────────────────────────────────
+// ─── MIDI ROUTING ─────────────────────────────────────────────────────────────
 function routeNoteOn(note, velocity) {
-  if (arpOn) {
-    arpHeld.set(note, arpHeldOrder++);
-    arpStep = 0;
-  } else {
-    noteOn(note, velocity);
-  }
+  if (arpOn) { arpHeld.set(note, arpHeldOrder++); arpStep = 0; }
+  else noteOn(note, velocity);
 }
 
 function routeNoteOff(note) {
-  if (arpOn) {
-    arpHeld.delete(note);
-    if (arpHeld.size === 0) arpSilence();
-  } else {
-    noteOff(note);
-  }
+  if (arpOn) { arpHeld.delete(note); if (arpHeld.size === 0) arpSilence(); }
+  else noteOff(note);
 }
 
 // ─── MIDI ─────────────────────────────────────────────────────────────────────
 async function initMIDI() {
   if (typeof AndroidMidiBridge !== 'undefined') {
-    setMidiStatus('ANDROID MIDI BRIDGE ACTIVE', '');
-    return;
+    setMidiStatus('ANDROID MIDI BRIDGE ACTIVE', ''); return;
   }
   if (!navigator.requestMIDIAccess) {
-    setMidiStatus('WEB MIDI NOT SUPPORTED', 'error');
-    return;
+    setMidiStatus('WEB MIDI NOT SUPPORTED', 'error'); return;
   }
   try {
     const midi = await navigator.requestMIDIAccess({ sysex: false });
@@ -657,31 +757,63 @@ function handleMIDIAccess(midi) {
 }
 
 function onMIDIMessage(e) {
-  const [status, note, velocity] = e.data;
+  const [status, data1, data2] = e.data;
   const cmd = status & 0xf0;
   document.getElementById('last-msg').textContent =
-    status.toString(16).toUpperCase() + ' ' + note + ' ' + velocity;
-  if (cmd === 0x90 && velocity > 0) {
-    routeNoteOn(note, velocity);
-  } else if (cmd === 0x80 || (cmd === 0x90 && velocity === 0)) {
-    routeNoteOff(note);
+    status.toString(16).toUpperCase() + ' ' + data1 + ' ' + data2;
+  if (cmd === 0x90 && data2 > 0) {
+    routeNoteOn(data1, data2);
+  } else if (cmd === 0x80 || (cmd === 0x90 && data2 === 0)) {
+    routeNoteOff(data1);
   } else if (cmd === 0xb0) {
-    if (note === 7)  { masterGain.gain.value = velocity/127; document.getElementById('master-vol').value = velocity/127; document.getElementById('master-vol-val').textContent = Math.round(velocity/127*100)+'%'; }
-    if (note === 74) { const f = 80+(velocity/127)*17920; filterNode.frequency.value = f; document.getElementById('filter-freq').value = f; document.getElementById('filter-freq-val').textContent = Math.round(f)+' Hz'; }
+    if (data1 === 64) {
+      // Sustain pedal
+      setSustain(data2 >= 64);
+    } else if (data1 === 7 && masterGain) {
+      masterGain.gain.value = data2/127;
+      document.getElementById('master-vol').value = data2/127;
+      document.getElementById('master-vol-val').textContent = Math.round(data2/127*100)+'%';
+    } else if (data1 === 74 && filterNode) {
+      const f = 80 + (data2/127)*17920;
+      filterNode.frequency.value = f;
+      document.getElementById('filter-freq').value = f;
+      document.getElementById('filter-freq-val').textContent = Math.round(f)+' Hz';
+    }
   } else if (cmd === 0xe0) {
     const bend = ((e.data[2]<<7|e.data[1])-8192)/8192;
-    activeNotes.forEach(({osc, freq}) => { osc.frequency.value = freq * Math.pow(2, bend*2/12); });
+    activeNotes.forEach(({osc,freq}) => { osc.frequency.value = freq*Math.pow(2,bend*2/12); });
   }
 }
 
 function setMidiStatus(msg, cls) {
   const el = document.getElementById('midi-status');
-  el.textContent = msg;
-  el.className = cls;
+  el.textContent = msg; el.className = cls;
 }
 
+// ─── COMPUTER KEYBOARD ────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  const key = e.key.toLowerCase();
+  if (key === 'z') { computerOctave = Math.max(1, computerOctave-1); return; }
+  if (key === 'x') { computerOctave = Math.min(7, computerOctave+1); return; }
+  if (key in KEY_NOTE_MAP && !computerHeld.has(key)) {
+    computerHeld.add(key);
+    const note = (computerOctave+1)*12 + KEY_NOTE_MAP[key];
+    routeNoteOn(note, 100);
+  }
+});
+
+document.addEventListener('keyup', e => {
+  const key = e.key.toLowerCase();
+  if (key in KEY_NOTE_MAP && computerHeld.has(key)) {
+    computerHeld.delete(key);
+    const note = (computerOctave+1)*12 + KEY_NOTE_MAP[key];
+    routeNoteOff(note);
+  }
+});
+
 // ─── OSCILLOSCOPE ─────────────────────────────────────────────────────────────
-const canvas = document.getElementById('scope');
+const canvas   = document.getElementById('scope');
 const scopeCtx = canvas.getContext('2d');
 
 function resizeCanvas() {
@@ -691,31 +823,97 @@ function resizeCanvas() {
 resizeCanvas();
 window.addEventListener('resize', resizeCanvas);
 
+function updateScopeXLabels() {
+  // Show time labels in ms based on buffer size and sample rate
+  if (!ctx) return;
+  const el = document.getElementById('scope-label-x');
+  if (scopeMode === 'fft') {
+    el.innerHTML = '<span>0</span><span>1kHz</span><span>2kHz</span><span>4kHz</span><span>8kHz</span>';
+  } else {
+    const bufLen = analyser ? analyser.fftSize : 2048;
+    const totalMs = (bufLen / (ctx.sampleRate || 44100) * 1000).toFixed(1);
+    const halfMs  = (totalMs / 2).toFixed(1);
+    el.innerHTML = '<span>0</span><span>' + halfMs + 'ms</span><span>' + totalMs + 'ms</span>';
+  }
+}
+
+// Find first upward zero crossing for stable trigger
+function findTrigger(buf) {
+  for (let i = 1; i < buf.length - 1; i++) {
+    if (buf[i-1] < 128 && buf[i] >= 128) return i;
+  }
+  return 0;
+}
+
 function drawScope() {
   requestAnimationFrame(drawScope);
   const w = canvas.width, h = canvas.height;
   scopeCtx.fillStyle = '#08080f';
   scopeCtx.fillRect(0, 0, w, h);
-  scopeCtx.strokeStyle = 'rgba(0,255,231,0.05)';
+
+  // Grid
+  scopeCtx.strokeStyle = 'rgba(0,255,231,0.06)';
   scopeCtx.lineWidth = 1;
-  for (let x = 0; x < w; x += w/8) { scopeCtx.beginPath(); scopeCtx.moveTo(x,0); scopeCtx.lineTo(x,h); scopeCtx.stroke(); }
-  scopeCtx.beginPath(); scopeCtx.moveTo(0,h/2); scopeCtx.lineTo(w,h/2); scopeCtx.stroke();
+  [0.25, 0.5, 0.75].forEach(f => {
+    scopeCtx.beginPath(); scopeCtx.moveTo(f*w,0); scopeCtx.lineTo(f*w,h); scopeCtx.stroke();
+    scopeCtx.beginPath(); scopeCtx.moveTo(0,f*h); scopeCtx.lineTo(w,f*h); scopeCtx.stroke();
+  });
+
   if (!analyser) return;
-  const buf = new Uint8Array(analyser.frequencyBinCount);
-  analyser.getByteTimeDomainData(buf);
-  scopeCtx.beginPath();
-  scopeCtx.strokeStyle = '#00ffe7';
-  scopeCtx.lineWidth = 2 * window.devicePixelRatio;
-  scopeCtx.shadowColor = '#00ffe7';
-  scopeCtx.shadowBlur = 6;
-  for (let i = 0; i < buf.length; i++) {
-    const x = (i/buf.length)*w;
-    const y = ((buf[i]/128)-1)*(h*0.45)+h/2;
-    i === 0 ? scopeCtx.moveTo(x,y) : scopeCtx.lineTo(x,y);
+
+  if (scopeMode === 'fft') {
+    // ── FFT SPECTRUM ──
+    const fftBuf = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(fftBuf);
+    const nyquist = ctx.sampleRate / 2;
+    const maxFreq = 8000;
+    const bins = Math.floor(fftBuf.length * maxFreq / nyquist);
+    scopeCtx.fillStyle = 'rgba(0,255,231,0.7)';
+    for (let i = 0; i < bins; i++) {
+      const x = (i / bins) * w;
+      const barH = (fftBuf[i] / 255) * h;
+      scopeCtx.fillRect(x, h - barH, w/bins + 1, barH);
+    }
+    // Peak line
+    scopeCtx.beginPath();
+    scopeCtx.strokeStyle = '#00ffe7';
+    scopeCtx.lineWidth = 1.5;
+    for (let i = 0; i < bins; i++) {
+      const x = (i / bins) * w;
+      const y = h - (fftBuf[i] / 255) * h;
+      i === 0 ? scopeCtx.moveTo(x,y) : scopeCtx.lineTo(x,y);
+    }
+    scopeCtx.stroke();
+  } else {
+    // ── OSCILLOSCOPE with TRIGGER ──
+    let buf;
+    if (scopeFrozen && frozenBuf) {
+      buf = frozenBuf;
+    } else {
+      buf = new Uint8Array(analyser.fftSize);
+      analyser.getByteTimeDomainData(buf);
+      if (!scopeFrozen) frozenBuf = buf;
+    }
+    const triggerIdx = findTrigger(buf);
+    const displaySamples = Math.min(buf.length - triggerIdx, analyser.fftSize / 2);
+    scopeCtx.beginPath();
+    scopeCtx.strokeStyle = '#00ffe7';
+    scopeCtx.lineWidth = 2 * window.devicePixelRatio;
+    scopeCtx.shadowColor = '#00ffe7';
+    scopeCtx.shadowBlur = 5;
+    for (let i = 0; i < displaySamples; i++) {
+      const x = (i / displaySamples) * w;
+      const y = ((buf[triggerIdx + i] / 128) - 1) * (h * 0.45) + h / 2;
+      i === 0 ? scopeCtx.moveTo(x, y) : scopeCtx.lineTo(x, y);
+    }
+    scopeCtx.stroke();
+    scopeCtx.shadowBlur = 0;
   }
-  scopeCtx.stroke();
-  scopeCtx.shadowBlur = 0;
-  const rms = Math.sqrt(buf.reduce((a,v)=>a+((v/128)-1)**2,0)/buf.length);
+
+  // VU meters
+  const timeBuf = new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(timeBuf);
+  const rms = Math.sqrt(timeBuf.reduce((a,v)=>a+((v/128)-1)**2,0)/timeBuf.length);
   document.querySelectorAll('.vu-fill').forEach((f,i) => {
     f.style.height = Math.max(0, Math.min(100, rms*500-i*12)) + '%';
   });
@@ -723,8 +921,8 @@ function drawScope() {
 drawScope();
 
 // ─── KEYBOARD VIS ─────────────────────────────────────────────────────────────
-const START_NOTE = 48;
-const BLACK_PATTERN = [false,true,false,true,false,false,true,false,true,false,true,false];
+const START_NOTE     = 48;
+const BLACK_PATTERN  = [false,true,false,true,false,false,true,false,true,false,true,false];
 
 function buildKeyboard() {
   const vis = document.getElementById('kb-vis');
@@ -742,6 +940,16 @@ function highlightKey(note, on) {
   const el = document.querySelector('.kb-key[data-note="' + note + '"]');
   if (el) el.classList.toggle('active', on);
 }
+
+// ─── ARP STEP DOTS ────────────────────────────────────────────────────────────
+(function buildArpDots() {
+  const wrap = document.getElementById('arp-steps');
+  for (let i = 0; i < ARP_STEPS; i++) {
+    const d = document.createElement('div');
+    d.className = 'arp-step-dot'; d.id = 'arp-dot-' + i;
+    wrap.appendChild(d);
+  }
+})();
 
 // ─── UI HELPERS ───────────────────────────────────────────────────────────────
 function midiToFreq(n) { return 440 * Math.pow(2, (n-69)/12); }
@@ -764,33 +972,34 @@ function updatePolyCount() {
     activeNotes.size + (pianoMode ? pianoActive.size : 0);
 }
 
-// ─── ARP STEP DOTS ────────────────────────────────────────────────────────────
-(function buildArpDots() {
-  const wrap = document.getElementById('arp-steps');
-  for (let i = 0; i < ARP_STEPS; i++) {
-    const d = document.createElement('div');
-    d.className = 'arp-step-dot';
-    d.id = 'arp-dot-' + i;
-    wrap.appendChild(d);
-  }
-})();
-
 // ─── CONTROLS ─────────────────────────────────────────────────────────────────
-// Piano volume slider
-let pianoGain = 14.0;
-document.getElementById('piano-vol').addEventListener('input', e => {
-  pianoGain = parseFloat(e.target.value);
-  document.getElementById('piano-vol-val').textContent = pianoGain.toFixed(1);
+// Scope buttons
+document.getElementById('btn-scope').addEventListener('click', () => {
+  scopeMode = 'scope'; scopeFrozen = false;
+  document.getElementById('btn-scope').classList.add('active');
+  document.getElementById('btn-fft').classList.remove('active');
+  document.getElementById('btn-freeze').classList.remove('active');
+  document.getElementById('scope-title').textContent = '// OSCILLOSCOPE';
+  document.getElementById('scope-label-y').style.display = '';
+  updateScopeXLabels();
 });
-
-// Wave buttons
-document.querySelectorAll('.wave-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.wave-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    waveType = btn.dataset.wave;
-    activeNotes.forEach(({osc}) => { try { osc.type = waveType; } catch(e) {} });
-  });
+document.getElementById('btn-fft').addEventListener('click', () => {
+  scopeMode = 'fft'; scopeFrozen = false;
+  document.getElementById('btn-fft').classList.add('active');
+  document.getElementById('btn-scope').classList.remove('active');
+  document.getElementById('btn-freeze').classList.remove('active');
+  document.getElementById('scope-title').textContent = '// FFT SPECTRUM';
+  document.getElementById('scope-label-y').style.display = 'none';
+  updateScopeXLabels();
+});
+document.getElementById('btn-freeze').addEventListener('click', function() {
+  if (scopeMode === 'fft') return;
+  scopeFrozen = !scopeFrozen;
+  this.classList.toggle('active', scopeFrozen);
+  if (scopeFrozen) {
+    frozenBuf = new Uint8Array(analyser ? analyser.fftSize : 2048);
+    if (analyser) analyser.getByteTimeDomainData(frozenBuf);
+  }
 });
 
 // Mode toggle
@@ -808,6 +1017,22 @@ document.getElementById('mode-piano').addEventListener('click', () => {
   document.getElementById('osc-panel').style.display = 'none';
   document.getElementById('piano-vol-row').style.display = '';
   if (!pianoLoaded && !pianoLoading) loadPianoSamples();
+});
+
+// Piano volume
+document.getElementById('piano-vol').addEventListener('input', e => {
+  pianoGain = parseFloat(e.target.value);
+  document.getElementById('piano-vol-val').textContent = pianoGain.toFixed(1);
+});
+
+// Wave buttons
+document.querySelectorAll('.wave-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.wave-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    waveType = btn.dataset.wave;
+    activeNotes.forEach(({osc}) => { try { osc.type = waveType; } catch(e) {} });
+  });
 });
 
 // ADSR
@@ -843,9 +1068,9 @@ document.getElementById('master-vol').addEventListener('input', e => {
 // FX
 document.getElementById('fx-reverb').addEventListener('click', function() { reverbActive = !reverbActive; this.classList.toggle('active', reverbActive); });
 document.getElementById('fx-chorus').addEventListener('click', function() { chorusActive = !chorusActive; this.classList.toggle('active', chorusActive); });
-document.getElementById('fx-dist').addEventListener('click', function()   { distActive   = !distActive;   this.classList.toggle('active', distActive); });
+document.getElementById('fx-dist').addEventListener('click',   function() { distActive   = !distActive;   this.classList.toggle('active', distActive); });
 
-// Arp controls
+// Arp
 document.getElementById('arp-power').addEventListener('click', function() {
   arpOn = !arpOn;
   this.classList.toggle('active', arpOn);
