@@ -6,6 +6,7 @@
 <title>NOVA SYNTH</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.28/build/Midi.js"></script>
 <style>
   :root {
     --bg:#0a0a0f; --panel:#111118; --border:#1e1e2e;
@@ -191,6 +192,14 @@
   .instr-btn.active{border-color:var(--accent);color:var(--accent);
     background:rgba(0,255,231,0.07);box-shadow:0 0 8px rgba(0,255,231,0.15);}
   .instr-btn.cached::after{content:"·";color:var(--accent3);margin-left:2px;}
+
+  /* CHORD BUTTONS */
+  .chord-btn{background:var(--knob-bg);border:1px solid var(--border);border-radius:4px;
+    color:var(--dim);font-family:"Share Tech Mono",monospace;font-size:0.6rem;
+    letter-spacing:0.08em;padding:8px 4px;cursor:pointer;text-align:center;
+    transition:all 0.15s;-webkit-tap-highlight-color:transparent;}
+  .chord-btn.active{border-color:var(--accent2);color:var(--accent2);
+    background:rgba(255,45,120,0.08);box-shadow:0 0 8px rgba(255,45,120,0.15);}
 
   /* STARTUP OVERLAY */
   #start-overlay{position:fixed;inset:0;background:rgba(10,10,15,0.97);z-index:999;
@@ -411,6 +420,12 @@
     <div class="arp-steps" id="arp-steps"></div>
   </div>
 
+  <!-- CHORDS -->
+  <div class="section">
+    <div class="section-title">// CHORD MODE</div>
+    <div id="chord-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px;"></div>
+  </div>
+
   <!-- KEYBOARD VIS -->
   <div class="section">
     <div class="section-title">// KEYBOARD  <span style="color:var(--dim);font-size:0.5rem">C3–C5 · MIDI + COMPUTER KEYS</span></div>
@@ -422,6 +437,29 @@
     <div class="kb-hint" style="margin-top:8px">
       <span>A S D F G H J K L</span> = white keys &nbsp;|&nbsp; <span>W E T Y U O P</span> = black keys<br>
       <span>Z</span> = oct down &nbsp;|&nbsp; <span>X</span> = oct up
+    </div>
+  </div>
+
+  <!-- MIDI FILE PLAYER -->
+  <div class="section">
+    <div class="section-title">// MIDI FILE PLAYER</div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+      <label style="flex:1;">
+        <input type="file" id="midi-file-input" accept=".mid,.midi" style="display:none">
+        <div class="scope-btn" style="text-align:center;cursor:pointer" id="midi-file-label">📂 LOAD MIDI FILE</div>
+      </label>
+    </div>
+    <div id="midi-file-name" style="font-size:0.6rem;color:var(--dim);margin-bottom:8px;letter-spacing:0.08em;">NO FILE LOADED</div>
+    <div style="display:flex;gap:6px;margin-bottom:10px;">
+      <button class="scope-btn" id="midi-play" style="flex:1" disabled>▶ PLAY</button>
+      <button class="scope-btn" id="midi-stop" style="flex:1" disabled>■ STOP</button>
+    </div>
+    <div style="margin-bottom:6px;">
+      <div class="knob-label" style="margin-bottom:4px">TEMPO <span id="midi-tempo-val" style="color:var(--accent3)">100%</span></div>
+      <input type="range" class="horiz" id="midi-tempo" min="25" max="200" step="1" value="100">
+    </div>
+    <div id="midi-progress-wrap" style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
+      <div id="midi-progress" style="height:100%;width:0%;background:var(--accent);border-radius:2px;transition:width 0.1s;"></div>
     </div>
   </div>
 
@@ -706,6 +744,39 @@ function makeDistCurve(amount) {
 }
 
 // ─── INSTRUMENT PICKER ────────────────────────────────────────────────────────
+function buildChordButtons() {
+  const grid = document.getElementById('chord-grid');
+  const chords = [
+    {id:'off',    label:'OFF'},
+    {id:'major',  label:'MAJOR'},
+    {id:'minor',  label:'MINOR'},
+    {id:'power',  label:'POWER'},
+    {id:'sus2',   label:'SUS2'},
+    {id:'sus4',   label:'SUS4'},
+    {id:'dim',    label:'DIM'},
+    {id:'aug',    label:'AUG'},
+    {id:'dom7',   label:'DOM 7'},
+    {id:'maj7',   label:'MAJ 7'},
+    {id:'min7',   label:'MIN 7'},
+    {id:'maj9',   label:'MAJ 9'},
+  ];
+  chords.forEach(ch => {
+    const btn = document.createElement('button');
+    btn.className = 'chord-btn' + (ch.id === 'off' ? ' active' : '');
+    btn.textContent = ch.label;
+    btn.dataset.chord = ch.id;
+    btn.addEventListener('click', () => {
+      chordMode = ch.id;
+      document.querySelectorAll('.chord-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      // Stop any held chord notes when switching
+      chordNotes.forEach((notes, root) => notes.forEach(n => noteOff(n)));
+      chordNotes.clear();
+    });
+    grid.appendChild(btn);
+  });
+}
+
 function buildPicker() {
   const catStrip = document.getElementById('cat-strip');
   Object.keys(INSTRUMENT_DB).forEach(cat => {
@@ -869,7 +940,7 @@ function noteOnSF(note, velocity) {
   if (!sfInstr) return;
   if (sfActive.has(note)) { try { sfActive.get(note).stop(); } catch(e) {} sfActive.delete(note); }
   const node = sfInstr.play(note, ctx.currentTime, {
-    gain: (velocity / 127) * sfGain, duration: 20
+    gain: (velocity / 127) * sfGain, duration: 60
   });
   sfActive.set(note, node);
   updateUI(note, midiToFreq(note), velocity);
@@ -880,7 +951,8 @@ function noteOnSF(note, velocity) {
 function noteOffSF(note) {
   if (sustainOn) { sustainedNotes.add(note); return; }
   if (!sfActive.has(note)) return;
-  const rel = getReleaseTime() !== null ? getReleaseTime() : 0.3;
+  // Stop sample immediately then apply a short fade to avoid clicks
+  const rel = getReleaseTime() !== null ? getReleaseTime() : 0.15;
   try { sfActive.get(note).stop(ctx.currentTime + rel); } catch(e) {}
   sfActive.delete(note);
   highlightKey(note, false);
@@ -977,14 +1049,59 @@ function arpSilence() {
 function arpStart() { clearInterval(arpTimer); arpStep=0; arpTimer=setInterval(arpTick,arpGetBeatMs()); }
 function arpStop()  { clearInterval(arpTimer); arpTimer=null; arpSilence(); document.querySelectorAll('.arp-step-dot').forEach(d=>d.classList.remove('active')); }
 
+// ─── CHORDS ───────────────────────────────────────────────────────────────────
+const CHORD_INTERVALS = {
+  'off':      [],
+  'major':    [4, 7],
+  'minor':    [3, 7],
+  'sus2':     [2, 7],
+  'sus4':     [5, 7],
+  'dim':      [3, 6],
+  'aug':      [4, 8],
+  'power':    [7],
+  'maj7':     [4, 7, 11],
+  'min7':     [3, 7, 10],
+  'dom7':     [4, 7, 10],
+  'maj9':     [4, 7, 11, 14],
+};
+let chordMode = 'off';
+const chordNotes = new Map(); // root note -> [chord notes played]
+
+function chordNotesFor(root) {
+  const intervals = CHORD_INTERVALS[chordMode] || [];
+  return intervals.map(i => root + i).filter(n => n <= 127);
+}
+
 // ─── ROUTING ──────────────────────────────────────────────────────────────────
 function routeNoteOn(note, velocity) {
-  if (arpOn) { arpHeld.set(note, arpHeldOrder++); arpStep=0; }
-  else noteOn(note, velocity);
+  if (arpOn) {
+    // In arp mode, add root + chord notes to held set
+    const extra = chordNotesFor(note);
+    arpHeld.set(note, arpHeldOrder++);
+    extra.forEach(n => arpHeld.set(n, arpHeldOrder++));
+    arpStep = 0;
+  } else {
+    noteOn(note, velocity);
+    if (chordMode !== 'off') {
+      const extra = chordNotesFor(note);
+      chordNotes.set(note, extra);
+      extra.forEach(n => noteOn(n, Math.max(1, velocity - 10)));
+    }
+  }
 }
 function routeNoteOff(note) {
-  if (arpOn) { arpHeld.delete(note); if (arpHeld.size===0) arpSilence(); }
-  else noteOff(note);
+  if (arpOn) {
+    const extra = chordNotesFor(note);
+    arpHeld.delete(note);
+    extra.forEach(n => arpHeld.delete(n));
+    if (arpHeld.size === 0) arpSilence();
+  } else {
+    noteOff(note);
+    if (chordMode !== 'off' && chordNotes.has(note)) {
+      chordNotes.get(note).forEach(n => noteOff(n));
+      chordNotes.delete(note);
+    }
+  }
 }
 
 // ─── MIDI ─────────────────────────────────────────────────────────────────────
@@ -1223,7 +1340,116 @@ document.getElementById('start-overlay').addEventListener('click',()=>{
 });
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
+
+// ─── MIDI FILE PLAYER ─────────────────────────────────────────────────────────
+let midiData      = null;
+let midiPlaying   = false;
+let midiTimers    = [];
+let midiStartTime = 0;
+let midiDuration  = 0;
+
+document.getElementById('midi-file-label').addEventListener('click', () => {
+  document.getElementById('midi-file-input').click();
+});
+
+document.getElementById('midi-file-input').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      midiData = new Midi(ev.target.result);
+      document.getElementById('midi-file-name').textContent = file.name.toUpperCase();
+      document.getElementById('midi-play').disabled = false;
+      document.getElementById('midi-stop').disabled = false;
+      // Calculate duration
+      midiDuration = Math.max(...midiData.tracks.map(t =>
+        t.notes.length ? t.notes[t.notes.length-1].time + t.notes[t.notes.length-1].duration : 0
+      ));
+      document.getElementById('midi-progress').style.width = '0%';
+    } catch(err) {
+      document.getElementById('midi-file-name').textContent = 'ERROR: INVALID MIDI FILE';
+    }
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+document.getElementById('midi-play').addEventListener('click', () => {
+  if (!midiData) return;
+  if (midiPlaying) midiStopPlayback();
+  midiStartPlayback();
+});
+
+document.getElementById('midi-stop').addEventListener('click', () => {
+  midiStopPlayback();
+  document.getElementById('midi-progress').style.width = '0%';
+});
+
+document.getElementById('midi-tempo').addEventListener('input', e => {
+  document.getElementById('midi-tempo-val').textContent = e.target.value + '%';
+  if (midiPlaying) { midiStopPlayback(); midiStartPlayback(); }
+});
+
+function midiStartPlayback() {
+  if (!midiData) return;
+  initAudio();
+  if (ctx.state === 'suspended') ctx.resume();
+  midiPlaying   = true;
+  midiStartTime = ctx.currentTime;
+  const tempoScale = 100 / parseInt(document.getElementById('midi-tempo').value);
+  midiTimers = [];
+
+  // Schedule all notes from all tracks
+  midiData.tracks.forEach(track => {
+    track.notes.forEach(note => {
+      const startSec = note.time * tempoScale;
+      const durSec   = note.duration * tempoScale;
+      const vel      = Math.round(note.velocity * 127);
+
+      const onTimer = setTimeout(() => {
+        if (!midiPlaying) return;
+        noteOn(note.midi, vel);
+      }, startSec * 1000);
+
+      const offTimer = setTimeout(() => {
+        if (!midiPlaying) return;
+        noteOff(note.midi);
+      }, (startSec + durSec) * 1000);
+
+      midiTimers.push(onTimer, offTimer);
+    });
+  });
+
+  // Progress bar + auto-stop
+  const totalMs = midiDuration * tempoScale * 1000;
+  const progressInterval = setInterval(() => {
+    if (!midiPlaying) { clearInterval(progressInterval); return; }
+    const elapsed = (ctx.currentTime - midiStartTime) / (midiDuration * tempoScale);
+    document.getElementById('midi-progress').style.width = Math.min(100, elapsed * 100) + '%';
+  }, 100);
+  midiTimers.push(progressInterval);
+
+  const endTimer = setTimeout(() => {
+    midiStopPlayback();
+    document.getElementById('midi-progress').style.width = '100%';
+  }, totalMs + 500);
+  midiTimers.push(endTimer);
+
+  document.getElementById('midi-play').textContent = '▶ PLAYING';
+}
+
+function midiStopPlayback() {
+  midiPlaying = false;
+  midiTimers.forEach(t => { clearTimeout(t); clearInterval(t); });
+  midiTimers = [];
+  // Release all active notes
+  [...activeNotes.keys()].forEach(n => noteOff(n));
+  [...sfActive.keys()].forEach(n => noteOffSF(n));
+  document.getElementById('midi-play').textContent = '▶ PLAY';
+}
+
 buildPicker();
+buildChordButtons();
 window.addEventListener('load', initMIDI);
 </script>
 </body>
