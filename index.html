@@ -201,6 +201,48 @@
   .chord-btn.active{border-color:var(--accent2);color:var(--accent2);
     background:rgba(255,45,120,0.08);box-shadow:0 0 8px rgba(255,45,120,0.15);}
 
+  /* MIDI TRACK LIST */
+  #midi-track-list { margin-top:10px; display:none; }
+  .midi-track-row {
+    display:grid; grid-template-columns:28px 1fr auto; gap:6px;
+    align-items:center; padding:5px 0;
+    border-bottom:1px solid var(--border);
+  }
+  .midi-track-row:last-child { border-bottom:none; }
+  .track-mute-btn {
+    width:24px; height:24px; border-radius:50%;
+    border:1px solid var(--border); background:var(--knob-bg);
+    cursor:pointer; display:flex; align-items:center; justify-content:center;
+    font-size:0.5rem; color:var(--accent); transition:all 0.15s;
+    -webkit-tap-highlight-color:transparent; flex-shrink:0;
+    box-shadow:0 0 6px rgba(0,255,231,0.3);
+  }
+  .track-mute-btn.muted {
+    background:rgba(255,45,120,0.15); border-color:var(--accent2);
+    color:var(--accent2); box-shadow:0 0 6px rgba(255,45,120,0.3);
+  }
+  .track-info { min-width:0; }
+  .track-name {
+    font-size:0.55rem; letter-spacing:0.1em; color:var(--dim);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .track-instr-name {
+    font-size:0.65rem; color:var(--text); letter-spacing:0.05em;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .track-instr-btn {
+    background:var(--knob-bg); border:1px solid var(--border);
+    border-radius:4px; color:var(--dim); font-family:"Share Tech Mono",monospace;
+    font-size:0.55rem; padding:4px 8px; cursor:pointer;
+    -webkit-tap-highlight-color:transparent; white-space:nowrap;
+    transition:all 0.15s; flex-shrink:0;
+  }
+  .track-instr-btn:hover { border-color:var(--accent); color:var(--accent); }
+  #midi-load-status {
+    font-size:0.6rem; color:var(--accent3); letter-spacing:0.1em;
+    text-align:center; padding:6px 0; display:none;
+  }
+
   /* STARTUP OVERLAY */
   #start-overlay{position:fixed;inset:0;background:rgba(10,10,15,0.97);z-index:999;
     display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -467,6 +509,8 @@
     <div id="midi-progress-wrap" style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
       <div id="midi-progress" style="height:100%;width:0%;background:var(--accent);border-radius:2px;transition:width 0.1s;"></div>
     </div>
+    <div id="midi-load-status">LOADING INSTRUMENTS…</div>
+    <div id="midi-track-list"></div>
   </div>
 
   <footer>NOVA·SX · WEB AUDIO + WEB MIDI · OPEN IN CHROME<br>CONNECT MIDI KEYBOARD → TAP START → PLAY</footer>
@@ -637,6 +681,137 @@
     {id:"gunshot",label:"GUNSHOT"},
   ],
 };
+
+const GM_TO_INSTR = [
+  "acoustic_grand_piano", // 0
+  "bright_acoustic_piano", // 1
+  "electric_grand_piano", // 2
+  "honky_tonk_piano", // 3
+  "electric_piano_1", // 4
+  "electric_piano_2", // 5
+  "harpsichord", // 6
+  "clavinet", // 7
+  "celesta", // 8
+  "glockenspiel", // 9
+  "music_box", // 10
+  "vibraphone", // 11
+  "marimba", // 12
+  "xylophone", // 13
+  "tubular_bells", // 14
+  "dulcimer", // 15
+  "drawbar_organ", // 16
+  "percussive_organ", // 17
+  "rock_organ", // 18
+  "church_organ", // 19
+  "reed_organ", // 20
+  "accordion", // 21
+  "harmonica", // 22
+  "tango_accordion", // 23
+  "acoustic_guitar_nylon", // 24
+  "acoustic_guitar_steel", // 25
+  "electric_guitar_jazz", // 26
+  "electric_guitar_clean", // 27
+  "electric_guitar_muted", // 28
+  "overdriven_guitar", // 29
+  "distortion_guitar", // 30
+  "guitar_harmonics", // 31
+  "acoustic_bass", // 32
+  "electric_bass_finger", // 33
+  "electric_bass_pick", // 34
+  "fretless_bass", // 35
+  "slap_bass_1", // 36
+  "slap_bass_2", // 37
+  "synth_bass_1", // 38
+  "synth_bass_2", // 39
+  "violin", // 40
+  "viola", // 41
+  "cello", // 42
+  "contrabass", // 43
+  "tremolo_strings", // 44
+  "pizzicato_strings", // 45
+  "orchestral_harp", // 46
+  "timpani", // 47
+  "string_ensemble_1", // 48
+  "string_ensemble_2", // 49
+  "synth_strings_1", // 50
+  "synth_strings_2", // 51
+  "choir_aahs", // 52
+  "voice_oohs", // 53
+  "synth_voice", // 54
+  "orchestra_hit", // 55
+  "trumpet", // 56
+  "trombone", // 57
+  "tuba", // 58
+  "muted_trumpet", // 59
+  "french_horn", // 60
+  "brass_section", // 61
+  "synth_brass_1", // 62
+  "synth_brass_2", // 63
+  "soprano_sax", // 64
+  "alto_sax", // 65
+  "tenor_sax", // 66
+  "baritone_sax", // 67
+  "oboe", // 68
+  "english_horn", // 69
+  "bassoon", // 70
+  "clarinet", // 71
+  "piccolo", // 72
+  "flute", // 73
+  "recorder", // 74
+  "pan_flute", // 75
+  "blown_bottle", // 76
+  "shakuhachi", // 77
+  "whistle", // 78
+  "ocarina", // 79
+  "lead_1_square", // 80
+  "lead_2_sawtooth", // 81
+  "lead_3_calliope", // 82
+  "lead_4_chiff", // 83
+  "lead_5_charang", // 84
+  "lead_6_voice", // 85
+  "lead_7_fifths", // 86
+  "lead_8_bass_lead", // 87
+  "pad_1_new_age", // 88
+  "pad_2_warm", // 89
+  "pad_3_polysynth", // 90
+  "pad_4_choir", // 91
+  "pad_5_bowed", // 92
+  "pad_6_metallic", // 93
+  "pad_7_halo", // 94
+  "pad_8_sweep", // 95
+  "fx_1_rain", // 96
+  "fx_2_soundtrack", // 97
+  "fx_3_crystal", // 98
+  "fx_4_atmosphere", // 99
+  "fx_5_brightness", // 100
+  "fx_6_goblins", // 101
+  "fx_7_echoes", // 102
+  "fx_8_sci_fi", // 103
+  "sitar", // 104
+  "banjo", // 105
+  "shamisen", // 106
+  "koto", // 107
+  "kalimba", // 108
+  "bag_pipe", // 109
+  "fiddle", // 110
+  "shanai", // 111
+  "tinkle_bell", // 112
+  "agogo", // 113
+  "steel_drums", // 114
+  "woodblock", // 115
+  "taiko_drum", // 116
+  "melodic_tom", // 117
+  "synth_drum", // 118
+  "reverse_cymbal", // 119
+  "guitar_fret_noise", // 120
+  "breath_noise", // 121
+  "seashore", // 122
+  "bird_tweet", // 123
+  "telephone_ring", // 124
+  "helicopter", // 125
+  "applause", // 126
+  "gunshot", // 127
+];
 
 // Per-category release times (seconds)
 const CAT_RELEASE = {
@@ -1383,17 +1558,31 @@ let midiPlaying   = false;
 let midiTimers    = [];
 let midiStartTime = 0;
 let midiDuration  = 0;
+let midiTracks    = []; // [{name, instrId, instrLabel, muted, sfInstr, channel}]
 
-// Wait for Midi library to be ready before allowing file load
 function getMidiClass() {
-  // @tonejs/midi UMD build exports to window.Midi
-  // The actual constructor may be window.Midi.Midi (nested) or window.Midi directly
   if (typeof Midi !== 'undefined' && typeof Midi === 'function') return Midi;
   if (window.Midi && typeof window.Midi.Midi === 'function') return window.Midi.Midi;
   if (window.Midi && typeof window.Midi === 'function') return window.Midi;
   return null;
 }
 
+// ── GM auto-mapping ──────────────────────────────────────────────────────────
+function gmToInstrId(programNum, channel) {
+  if (channel === 9) return 'synth_drum'; // GM channel 10 (0-indexed 9) = drums
+  const idx = Math.max(0, Math.min(127, programNum || 0));
+  return GM_TO_INSTR[idx] || 'acoustic_grand_piano';
+}
+
+function instrIdToLabel(id) {
+  for (const items of Object.values(INSTRUMENT_DB)) {
+    const found = items.find(i => i.id === id);
+    if (found) return found.label;
+  }
+  return id.toUpperCase();
+}
+
+// ── Parse file and build track list ──────────────────────────────────────────
 document.getElementById('midi-file-input').addEventListener('change', e => {
   const file = e.target.files[0];
   if (!file) return;
@@ -1405,17 +1594,16 @@ document.getElementById('midi-file-input').addEventListener('change', e => {
   const reader = new FileReader();
   reader.onload = ev => {
     try {
-      // @tonejs/midi v2 needs a Uint8Array, not a raw ArrayBuffer
       const bytes = new Uint8Array(ev.target.result);
       midiData = new MidiClass(bytes);
       document.getElementById('midi-file-name').textContent = file.name.toUpperCase();
-      document.getElementById('midi-play').disabled = false;
+      document.getElementById('midi-play').disabled = true;
       document.getElementById('midi-stop').disabled = false;
-      // Calculate duration
-      midiDuration = Math.max(...midiData.tracks.map(t =>
+      midiDuration = Math.max(0, ...midiData.tracks.map(t =>
         t.notes.length ? t.notes[t.notes.length-1].time + t.notes[t.notes.length-1].duration : 0
       ));
       document.getElementById('midi-progress').style.width = '0%';
+      buildTrackList();
     } catch(err) {
       document.getElementById('midi-file-name').textContent = 'ERROR: ' + err.message;
       console.error('MIDI parse error:', err);
@@ -1424,6 +1612,191 @@ document.getElementById('midi-file-input').addEventListener('change', e => {
   reader.readAsArrayBuffer(file);
 });
 
+function buildTrackList() {
+  midiTracks = [];
+  // Build track metadata
+  midiData.tracks.forEach((track, i) => {
+    if (!track.notes.length) return; // skip empty tracks
+    // Find program number from instrument messages
+    const programNum = track.instrument ? track.instrument.number : 0;
+    const channel = track.channel !== undefined ? track.channel : i;
+    const instrId = gmToInstrId(programNum, channel);
+    midiTracks.push({
+      index: i,
+      name: track.name || ('TRACK ' + (i+1)),
+      instrId,
+      instrLabel: instrIdToLabel(instrId),
+      muted: false,
+      sfInstr: sfCache[instrId] || null,
+      noteActive: new Map(), // midi note -> sf node during playback
+    });
+  });
+
+  renderTrackList();
+  loadAllTrackInstruments();
+}
+
+function renderTrackList() {
+  const list = document.getElementById('midi-track-list');
+  list.innerHTML = '';
+  list.style.display = midiTracks.length ? 'block' : 'none';
+
+  midiTracks.forEach((track, ti) => {
+    const row = document.createElement('div');
+    row.className = 'midi-track-row';
+    row.id = 'track-row-' + ti;
+
+    // Mute button
+    const muteBtn = document.createElement('button');
+    muteBtn.className = 'track-mute-btn' + (track.muted ? ' muted' : '');
+    muteBtn.textContent = track.muted ? '✕' : '●';
+    muteBtn.title = track.muted ? 'Unmute' : 'Mute';
+    muteBtn.addEventListener('click', () => {
+      track.muted = !track.muted;
+      muteBtn.className = 'track-mute-btn' + (track.muted ? ' muted' : '');
+      muteBtn.textContent = track.muted ? '✕' : '●';
+    });
+
+    // Track info
+    const info = document.createElement('div');
+    info.className = 'track-info';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'track-name';
+    nameEl.textContent = track.name.toUpperCase();
+    const instrEl = document.createElement('div');
+    instrEl.className = 'track-instr-name';
+    instrEl.id = 'track-instr-' + ti;
+    instrEl.textContent = track.instrLabel;
+    info.appendChild(nameEl);
+    info.appendChild(instrEl);
+
+    // Instrument change button
+    const instrBtn = document.createElement('button');
+    instrBtn.className = 'track-instr-btn';
+    instrBtn.textContent = '▼';
+    instrBtn.addEventListener('click', () => openTrackInstrPicker(ti));
+
+    row.appendChild(muteBtn);
+    row.appendChild(info);
+    row.appendChild(instrBtn);
+    list.appendChild(row);
+  });
+}
+
+// ── Per-track instrument picker ──────────────────────────────────────────────
+let pickerTargetTrack = null;
+let pickerOverlay     = null;
+
+function openTrackInstrPicker(trackIdx) {
+  pickerTargetTrack = trackIdx;
+  // Create overlay
+  if (pickerOverlay) pickerOverlay.remove();
+  pickerOverlay = document.createElement('div');
+  pickerOverlay.style.cssText = 'position:fixed;inset:0;background:rgba(10,10,15,0.95);z-index:500;display:flex;flex-direction:column;padding:16px;overflow:auto;';
+
+  const title = document.createElement('div');
+  title.style.cssText = 'font-family:Orbitron,sans-serif;font-size:0.8rem;color:var(--accent);letter-spacing:0.15em;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;';
+  title.innerHTML = 'SELECT INSTRUMENT <button id="picker-close" style="background:var(--knob-bg);border:1px solid var(--border);border-radius:4px;color:var(--dim);font-family:Share Tech Mono,monospace;font-size:0.7rem;padding:6px 12px;cursor:pointer;">✕ CLOSE</button>';
+  pickerOverlay.appendChild(title);
+
+  // Category buttons
+  const catWrap = document.createElement('div');
+  catWrap.style.cssText = 'display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;flex-wrap:wrap;';
+  Object.keys(INSTRUMENT_DB).forEach(cat => {
+    if (cat === 'OSCILLATOR') return;
+    const btn = document.createElement('button');
+    btn.className = 'cat-btn';
+    btn.textContent = cat;
+    btn.style.cssText = 'flex-shrink:0;';
+    btn.addEventListener('click', () => {
+      pickerOverlay.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderPickerGrid(cat);
+    });
+    catWrap.appendChild(btn);
+  });
+  pickerOverlay.appendChild(catWrap);
+
+  // Grid placeholder
+  const grid = document.createElement('div');
+  grid.id = 'track-picker-grid';
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:8px;';
+  pickerOverlay.appendChild(grid);
+
+  document.body.appendChild(pickerOverlay);
+
+  document.getElementById('picker-close').addEventListener('click', () => {
+    pickerOverlay.remove(); pickerOverlay = null;
+  });
+
+  // Show first category
+  const firstCat = Object.keys(INSTRUMENT_DB).find(c => c !== 'OSCILLATOR');
+  catWrap.querySelector('.cat-btn').classList.add('active');
+  renderPickerGrid(firstCat);
+}
+
+function renderPickerGrid(cat) {
+  const grid = document.getElementById('track-picker-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  INSTRUMENT_DB[cat].forEach(instr => {
+    const btn = document.createElement('button');
+    btn.className = 'instr-btn';
+    btn.textContent = instr.label;
+    btn.addEventListener('click', async () => {
+      const track = midiTracks[pickerTargetTrack];
+      track.instrId    = instr.id;
+      track.instrLabel = instr.label;
+      // Update display
+      const el = document.getElementById('track-instr-' + pickerTargetTrack);
+      if (el) el.textContent = instr.label;
+      // Load if not cached
+      if (!sfCache[instr.id]) {
+        initAudio();
+        try {
+          sfCache[instr.id] = await Soundfont.instrument(ctx, instr.id, {
+            soundfont: 'MusyngKite', gain: 1.0, destination: filterNode,
+          });
+        } catch(e) { console.error('Load failed:', e); }
+      }
+      track.sfInstr = sfCache[instr.id] || null;
+      pickerOverlay.remove(); pickerOverlay = null;
+    });
+    grid.appendChild(btn);
+  });
+}
+
+// ── Load all instruments for current tracks ───────────────────────────────────
+async function loadAllTrackInstruments() {
+  initAudio();
+  const toLoad = [...new Set(midiTracks.map(t => t.instrId))].filter(id => !sfCache[id]);
+  if (!toLoad.length) {
+    midiTracks.forEach(t => { t.sfInstr = sfCache[t.instrId] || null; });
+    document.getElementById('midi-play').disabled = false;
+    return;
+  }
+  const statusEl = document.getElementById('midi-load-status');
+  statusEl.style.display = 'block';
+  let loaded = 0;
+  statusEl.textContent = 'LOADING 0/' + toLoad.length + ' INSTRUMENTS…';
+
+  await Promise.all(toLoad.map(async id => {
+    try {
+      sfCache[id] = await Soundfont.instrument(ctx, id, {
+        soundfont: 'MusyngKite', gain: 1.0, destination: filterNode,
+      });
+    } catch(e) { console.error('Failed to load', id, e); }
+    loaded++;
+    statusEl.textContent = 'LOADING ' + loaded + '/' + toLoad.length + ' INSTRUMENTS…';
+  }));
+
+  midiTracks.forEach(t => { t.sfInstr = sfCache[t.instrId] || null; });
+  statusEl.textContent = '✓ ALL INSTRUMENTS READY';
+  setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
+  document.getElementById('midi-play').disabled = false;
+}
+
+// ── Playback ──────────────────────────────────────────────────────────────────
 document.getElementById('midi-play').addEventListener('click', () => {
   if (!midiData) return;
   if (midiPlaying) midiStopPlayback();
@@ -1441,7 +1814,7 @@ document.getElementById('midi-tempo').addEventListener('input', e => {
 });
 
 function midiStartPlayback() {
-  if (!midiData) return;
+  if (!midiData || !midiTracks.length) return;
   initAudio();
   if (ctx.state === 'suspended') ctx.resume();
   midiPlaying   = true;
@@ -1449,21 +1822,39 @@ function midiStartPlayback() {
   const tempoScale = 100 / parseInt(document.getElementById('midi-tempo').value);
   midiTimers = [];
 
-  // Schedule all notes from all tracks
-  midiData.tracks.forEach(track => {
-    track.notes.forEach(note => {
+  // Schedule each track independently through its own instrument
+  midiData.tracks.forEach((rawTrack, rawIdx) => {
+    const track = midiTracks.find(t => t.index === rawIdx);
+    if (!track || track.muted || !track.sfInstr) return;
+
+    rawTrack.notes.forEach(note => {
       const startSec = note.time * tempoScale;
       const durSec   = note.duration * tempoScale;
       const vel      = Math.round(note.velocity * 127);
 
       const onTimer = setTimeout(() => {
-        if (!midiPlaying) return;
-        noteOn(note.midi, vel);
+        if (!midiPlaying || track.muted) return;
+        try {
+          if (track.noteActive.has(note.midi)) {
+            try { track.noteActive.get(note.midi).stop(); } catch(e) {}
+          }
+          const node = track.sfInstr.play(note.midi, ctx.currentTime, {
+            gain: (vel / 127) * sfGain, duration: durSec + 2,
+          });
+          track.noteActive.set(note.midi, node);
+          highlightKey(note.midi, true);
+        } catch(e) {}
       }, startSec * 1000);
 
       const offTimer = setTimeout(() => {
         if (!midiPlaying) return;
-        noteOff(note.midi);
+        try {
+          if (track.noteActive.has(note.midi)) {
+            track.noteActive.get(note.midi).stop(ctx.currentTime + 0.1);
+            track.noteActive.delete(note.midi);
+          }
+          highlightKey(note.midi, false);
+        } catch(e) {}
       }, (startSec + durSec) * 1000);
 
       midiTimers.push(onTimer, offTimer);
@@ -1494,13 +1885,20 @@ function midiStopPlayback() {
   midiPlaying = false;
   midiTimers.forEach(t => { clearTimeout(t); clearInterval(t); });
   midiTimers = [];
-  // Release all active notes
+  // Stop all track notes
+  midiTracks.forEach(track => {
+    track.noteActive.forEach(node => { try { node.stop(); } catch(e) {} });
+    track.noteActive.clear();
+  });
+  // Stop any live notes too
   [...activeNotes.keys()].forEach(n => noteOff(n));
   [...sfActive.keys()].forEach(n => noteOffSF(n));
+  document.querySelectorAll('.kb-key').forEach(k => k.classList.remove('active'));
   const pb = document.getElementById('midi-play');
   pb.textContent = '▶ PLAY';
   pb.classList.remove('active');
 }
+
 
 buildPicker();
 buildChordButtons();
