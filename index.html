@@ -7,6 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.28/build/Midi.js"></script>
+<script src="https://surikov.github.io/webaudiofont/npm/dist/WebAudioFontPlayer.js"></script>
 <style>
   :root {
     --bg:#0a0a0f; --panel:#111118; --border:#1e1e2e;
@@ -865,6 +866,59 @@ const activeNotes = new Map();
 const MAX_POLY = 8;
 const env = { a: 0.01, d: 0.1, s: 0.7, r: 0.3 };
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+
+// ─── DRUM ENGINE ──────────────────────────────────────────────────────────────
+let wafPlayer    = null;   // WebAudioFontPlayer instance
+let drumsLoaded  = false;
+const drumPresets = {};    // note -> preset object from WebAudioFont
+
+// All 47 GM percussion notes
+const GM_DRUM_NOTES = [
+  35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,
+  51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,
+  67,68,69,70,71,72,73,74,75,76,77,78,79,80,81
+];
+
+function drumVarName(note) {
+  return '_drum_' + note + '_0_JCLive_sf2_file';
+}
+function drumFileUrl(note) {
+  return 'https://surikov.github.io/webaudiofontdata/sound/128' + note + '_0_JCLive_sf2_file.js';
+}
+
+async function loadDrumKit() {
+  if (drumsLoaded) return;
+  if (!wafPlayer) wafPlayer = new WebAudioFontPlayer();
+  return new Promise(resolve => {
+    let remaining = GM_DRUM_NOTES.length;
+    GM_DRUM_NOTES.forEach(note => {
+      const varName = drumVarName(note);
+      const url     = drumFileUrl(note);
+      wafPlayer.loader.startLoad(ctx, url, varName);
+      wafPlayer.loader.waitLoad(() => {
+        drumPresets[note] = window[varName] || null;
+        remaining--;
+        if (remaining === 0) {
+          drumsLoaded = true;
+          const loaded = Object.values(drumPresets).filter(Boolean).length;
+          console.log('Drum kit loaded. Presets ready:', loaded, '/', GM_DRUM_NOTES.length);
+          resolve();
+        }
+      });
+    });
+  });
+}
+
+function playDrumNote(note, velocity) {
+  if (!wafPlayer || !drumsLoaded) { console.log('drum skip: waf=',!!wafPlayer,'loaded=',drumsLoaded); return; }
+  const preset = drumPresets[note];
+  if (!preset) { console.log('no preset for note', note); return; }
+  try {
+    const gain = (velocity / 127) * midiVolume;
+    console.log('drum play note', note, 'gain', gain.toFixed(3), 'ctx state', ctx.state);
+    wafPlayer.queueWaveTable(ctx, ctx.destination, preset, 0, note, 1, gain);
+  } catch(e) { console.error('drum play error', note, e); }
+}
 
 // ─── INSTRUMENT STATE ─────────────────────────────────────────────────────────
 let currentInstrId  = 'oscillator';
@@ -1789,16 +1843,13 @@ function renderPickerGrid(cat) {
 // ── Load all instruments ──────────────────────────────────────────────────────
 async function loadAllTrackInstruments() {
   initAudio();
-  const toLoad = [...new Set(midiTracks.map(t => t.instrId))]
+  const melodicToLoad = [...new Set(midiTracks.map(t => t.instrId))]
     .filter(id => id !== '__drums__' && !sfCache[id]);
+  const needsDrums = midiTracks.some(t => t.instrId === '__drums__') && !drumsLoaded;
+  const totalJobs = melodicToLoad.length + (needsDrums ? 1 : 0);
 
-  // Load drums separately if needed
-  const needsDrums = midiTracks.some(t => t.instrId === '__drums__') && !sfCache['__drums__'];
-
-  const allToLoad = needsDrums ? [...toLoad, '__drums__'] : toLoad;
-
-  if (!allToLoad.length) {
-    midiTracks.forEach(t => { t.sfInstr = sfCache[t.instrId] || null; });
+  if (!totalJobs) {
+    midiTracks.forEach(t => { t.sfInstr = t.instrId === '__drums__' ? null : (sfCache[t.instrId] || null); });
     document.getElementById('midi-play').disabled = false;
     return;
   }
@@ -1806,20 +1857,31 @@ async function loadAllTrackInstruments() {
   const statusEl = document.getElementById('midi-load-status');
   statusEl.style.display = 'block';
   let loaded = 0;
-  statusEl.textContent = 'LOADING 0/' + allToLoad.length + ' INSTRUMENTS…';
+  statusEl.textContent = 'LOADING 0/' + totalJobs + ' INSTRUMENTS…';
 
-  await Promise.all(allToLoad.map(async id => {
+  const updateStatus = () => {
+    loaded++;
+    statusEl.textContent = 'LOADING ' + loaded + '/' + totalJobs + ' INSTRUMENTS…';
+  };
+
+  // Load melodic instruments
+  await Promise.all(melodicToLoad.map(async id => {
     try {
-      const instrName = id === '__drums__' ? 'percussion' : id;
-      sfCache[id] = await Soundfont.instrument(ctx, instrName, {
-        soundfont:'MusyngKite', gain:1.0, destination:filterNode,
+      sfCache[id] = await Soundfont.instrument(ctx, id, {
+        soundfont: 'MusyngKite', gain: 1.0, destination: filterNode,
       });
     } catch(e) { console.error('Failed to load', id, e); }
-    loaded++;
-    statusEl.textContent = 'LOADING ' + loaded + '/' + allToLoad.length + ' INSTRUMENTS…';
+    updateStatus();
   }));
 
-  midiTracks.forEach(t => { t.sfInstr = sfCache[t.instrId] || null; });
+  // Load drum kit via WebAudioFont
+  if (needsDrums) {
+    statusEl.textContent = 'LOADING DRUM KIT…';
+    try { await loadDrumKit(); } catch(e) { console.error('Drums failed:', e); }
+    updateStatus();
+  }
+
+  midiTracks.forEach(t => { t.sfInstr = t.instrId === '__drums__' ? null : (sfCache[t.instrId] || null); });
   statusEl.textContent = '✓ ALL INSTRUMENTS READY';
   setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
   document.getElementById('midi-play').disabled = false;
@@ -1930,7 +1992,8 @@ function midiSchedule() {
 
   midiData.tracks.forEach((rawTrack, rawIdx) => {
     const track = midiTracks.find(t => t.index === rawIdx);
-    if (!track || !track.sfInstr) return;
+    if (!track) return;
+    if (!track.sfInstr && track.instrId !== '__drums__') return;
 
     rawTrack.notes.forEach(note => {
       const absStart = note.time * tempoScale;
@@ -1945,21 +2008,27 @@ function midiSchedule() {
         const shouldPlay = anySoloed ? track.soloed : !track.muted;
         if (!shouldPlay) return;
         try {
-          if (track.noteActive.has(note.midi)) {
-            try { track.noteActive.get(note.midi).stop(); } catch(e) {}
+          if (track.instrId === '__drums__') {
+            // Route drums through WebAudioFont
+            playDrumNote(note.midi, Math.round(note.velocity * 127));
+            highlightKey(note.midi, true);
+          } else if (track.sfInstr) {
+            if (track.noteActive.has(note.midi)) {
+              try { track.noteActive.get(note.midi).stop(); } catch(e) {}
+            }
+            const node = track.sfInstr.play(note.midi, ctx.currentTime, {
+              gain: (note.velocity) * midiVolume, duration: absDur + 1,
+            });
+            track.noteActive.set(note.midi, node);
+            highlightKey(note.midi, true);
           }
-          const node = track.sfInstr.play(note.midi, ctx.currentTime, {
-            gain: (note.velocity) * midiVolume, duration: absDur + 1,
-          });
-          track.noteActive.set(note.midi, node);
-          highlightKey(note.midi, true);
         } catch(e) {}
       }, Math.max(0, delay));
 
       const offTimer = setTimeout(() => {
         if (!midiPlaying) return;
         try {
-          if (track.noteActive.has(note.midi)) {
+          if (track.instrId !== '__drums__' && track.noteActive.has(note.midi)) {
             track.noteActive.get(note.midi).stop(ctx.currentTime + 0.05);
             track.noteActive.delete(note.midi);
           }
