@@ -294,6 +294,27 @@
       text-shadow:0 0 10px var(--accent)">OSCILLATOR</div>
     <div id="cat-strip"></div>
     <div id="instr-grid" style="margin-top:8px"></div>
+    <div id="osc-panel" style="margin-top:8px;display:block">
+      <div class="wave-grid">
+        <button class="wave-btn active" data-wave="sine">
+          <svg width="36" height="18" viewBox="0 0 36 18"><path d="M0 9 Q9 0 18 9 Q27 18 36 9" stroke="#00ffe7" stroke-width="2" fill="none"/></svg>SINE
+        </button>
+        <button class="wave-btn" data-wave="square">
+          <svg width="36" height="18" viewBox="0 0 36 18"><polyline points="0,9 0,2 18,2 18,16 36,16 36,9" stroke="#00ffe7" stroke-width="2" fill="none"/></svg>SQR
+        </button>
+        <button class="wave-btn" data-wave="sawtooth">
+          <svg width="36" height="18" viewBox="0 0 36 18"><polyline points="0,16 18,2 18,16 36,2" stroke="#00ffe7" stroke-width="2" fill="none"/></svg>SAW
+        </button>
+        <button class="wave-btn" data-wave="triangle">
+          <svg width="36" height="18" viewBox="0 0 36 18"><polyline points="0,9 9,2 27,16 36,9" stroke="#00ffe7" stroke-width="2" fill="none"/></svg>TRI
+        </button>
+      </div>
+    </div>
+    <div id="osc-vol-row" style="margin-top:10px">
+      <div class="knob-label" style="margin-bottom:4px">OSC VOLUME</div>
+      <input type="range" class="horiz" id="osc-vol" min="0" max="1" step="0.01" value="0.7">
+      <div class="knob-val" id="osc-vol-val">70%</div>
+    </div>
     <div id="piano-vol-row" style="margin-top:10px;display:none">
       <div class="knob-label" style="margin-bottom:4px">INSTRUMENT VOLUME</div>
       <input type="range" class="horiz" id="piano-vol" min="1" max="20" step="0.5" value="14">
@@ -301,25 +322,9 @@
     </div>
   </div>
 
-  <!-- OSC PANEL (only visible when OSCILLATOR selected) -->
-  <div id="osc-panel" class="section">
-    <div class="section-title">// OSCILLATOR</div>
-    <div class="wave-grid">
-      <button class="wave-btn active" data-wave="sine">
-        <svg width="36" height="18" viewBox="0 0 36 18"><path d="M0 9 Q9 0 18 9 Q27 18 36 9" stroke="#00ffe7" stroke-width="2" fill="none"/></svg>SINE
-      </button>
-      <button class="wave-btn" data-wave="square">
-        <svg width="36" height="18" viewBox="0 0 36 18"><polyline points="0,9 0,2 18,2 18,16 36,16 36,9" stroke="#00ffe7" stroke-width="2" fill="none"/></svg>SQR
-      </button>
-      <button class="wave-btn" data-wave="sawtooth">
-        <svg width="36" height="18" viewBox="0 0 36 18"><polyline points="0,16 18,2 18,16 36,2" stroke="#00ffe7" stroke-width="2" fill="none"/></svg>SAW
-      </button>
-      <button class="wave-btn" data-wave="triangle">
-        <svg width="36" height="18" viewBox="0 0 36 18"><polyline points="0,9 9,2 27,16 36,9" stroke="#00ffe7" stroke-width="2" fill="none"/></svg>TRI
-      </button>
-    </div>
-  </div>
 
+
+  <div id="synth-only-panels">
   <!-- ENVELOPE -->
   <div class="section">
     <div class="section-title">// ENVELOPE (ADSR)</div>
@@ -357,6 +362,7 @@
       <div class="knob-val" id="filter-q-val">1.0</div>
     </div>
   </div>
+  </div><!-- end synth-only-panels -->
 
   <!-- FX -->
   <div class="section">
@@ -640,8 +646,8 @@ const CAT_RELEASE = {
   'ORGAN':       0.1,
   'GUITAR':      0.2,
   'BASS':        0.1,
-  'STRINGS':     0.8,
-  'ENSEMBLE':    0.9,
+  'STRINGS':     0.3,
+  'ENSEMBLE':    0.4,
   'BRASS':       0.3,
   'REED':        0.2,
   'PIPE':        0.25,
@@ -668,7 +674,7 @@ function getReleaseTime() {
 
 // ─── GLOBALS ──────────────────────────────────────────────────────────────────
 let ctx = null;
-let masterGain, filterNode, reverbNode, chorusDelay, distNode, analyser;
+let masterGain, filterNode, reverbNode, chorusDelay, distNode, analyser, oscGainNode;
 let reverbActive = false, chorusActive = false, distActive = false;
 let waveType = 'sine';
 const activeNotes = new Map();
@@ -719,6 +725,8 @@ function initAudio() {
   const chorusDepth = ctx.createGain(); chorusDepth.gain.value = 0.003;
   chorusLFO.connect(chorusDepth); chorusDepth.connect(chorusDelay.delayTime); chorusLFO.start();
   distNode = ctx.createWaveShaper(); distNode.curve = makeDistCurve(200);
+  oscGainNode = ctx.createGain();
+  oscGainNode.gain.value = 0.7;
   filterNode.connect(masterGain); masterGain.connect(analyser); analyser.connect(ctx.destination);
   document.getElementById('led-audio').classList.add('on');
   updateScopeXLabels();
@@ -787,6 +795,10 @@ function buildPicker() {
     catStrip.appendChild(btn);
   });
   selectCategory('OSCILLATOR');
+  // Ensure oscillator panel visible on startup
+  document.getElementById('osc-panel').style.display = '';
+  document.getElementById('synth-only-panels').style.display = '';
+  document.getElementById('piano-vol-row').style.display = 'none';
 
   // Mouse drag scroll
   let isDragging = false, startX = 0, scrollLeft = 0;
@@ -813,6 +825,19 @@ function selectCategory(cat) {
     b.classList.toggle('active', b.textContent === cat);
   });
   renderInstrGrid(cat);
+  // Auto-select the instrument if category has only one option
+  if (INSTRUMENT_DB[cat].length === 1) {
+    const instr = INSTRUMENT_DB[cat][0];
+    if (instr.id !== currentInstrId) {
+      selectInstrument(instr.id, instr.label, null);
+    }
+    // Always ensure panels are correct even if already selected
+    if (instr.id === 'oscillator') {
+      document.getElementById('osc-panel').style.display = '';
+      document.getElementById('synth-only-panels').style.display = '';
+      document.getElementById('piano-vol-row').style.display = 'none';
+    }
+  }
 }
 
 function renderInstrGrid(cat) {
@@ -844,14 +869,18 @@ async function selectInstrument(id, label, btn) {
     pianoMode = false;
     sfInstr   = null;
     document.getElementById('osc-panel').style.display = '';
+    document.getElementById('synth-only-panels').style.display = '';
     document.getElementById('piano-vol-row').style.display = 'none';
+    document.getElementById('osc-vol-row').style.display = '';
     return;
   }
 
   // Soundfont instrument
   pianoMode = true;
   document.getElementById('osc-panel').style.display = 'none';
+  document.getElementById('synth-only-panels').style.display = 'none';
   document.getElementById('piano-vol-row').style.display = '';
+  document.getElementById('osc-vol-row').style.display = 'none';
 
   if (sfCache[id]) {
     sfInstr = sfCache[id];
@@ -911,8 +940,9 @@ function noteOn(note, velocity) {
   let chain = gain;
   if (distActive)   { chain.connect(distNode);    chain = distNode; }
   if (chorusActive) { chain.connect(chorusDelay); chain = chorusDelay; }
-  if (reverbActive) { chain.connect(reverbNode);  reverbNode.connect(filterNode); }
-  chain.connect(filterNode);
+  if (reverbActive) { chain.connect(reverbNode);  reverbNode.connect(oscGainNode); }
+  chain.connect(oscGainNode);
+  oscGainNode.connect(filterNode);
   osc.connect(gain); osc.start();
   activeNotes.set(note, { osc, gain, freq, velocity });
   updateUI(note, freq, velocity);
@@ -1284,6 +1314,12 @@ document.getElementById('btn-freeze').addEventListener('click',function(){
   if (scopeFrozen) { frozenBuf=new Uint8Array(analyser?analyser.fftSize:2048); if(analyser) analyser.getByteTimeDomainData(frozenBuf); }
 });
 
+document.getElementById('osc-vol').addEventListener('input', e => {
+  const v = parseFloat(e.target.value);
+  if (oscGainNode) oscGainNode.gain.value = v;
+  document.getElementById('osc-vol-val').textContent = Math.round(v*100)+'%';
+});
+
 document.getElementById('piano-vol').addEventListener('input',e=>{
   sfGain=parseFloat(e.target.value);
   document.getElementById('piano-vol-val').textContent=sfGain.toFixed(1);
@@ -1348,17 +1384,30 @@ let midiTimers    = [];
 let midiStartTime = 0;
 let midiDuration  = 0;
 
-document.getElementById('midi-file-label').addEventListener('click', () => {
-  document.getElementById('midi-file-input').click();
-});
+// Wait for Midi library to be ready before allowing file load
+function getMidiClass() {
+  // @tonejs/midi UMD build exports to window.Midi
+  // The actual constructor may be window.Midi.Midi (nested) or window.Midi directly
+  if (typeof Midi !== 'undefined' && typeof Midi === 'function') return Midi;
+  if (window.Midi && typeof window.Midi.Midi === 'function') return window.Midi.Midi;
+  if (window.Midi && typeof window.Midi === 'function') return window.Midi;
+  return null;
+}
 
 document.getElementById('midi-file-input').addEventListener('change', e => {
   const file = e.target.files[0];
   if (!file) return;
+  const MidiClass = getMidiClass();
+  if (!MidiClass) {
+    document.getElementById('midi-file-name').textContent = 'LIBRARY LOADING — PLEASE TRY AGAIN';
+    return;
+  }
   const reader = new FileReader();
   reader.onload = ev => {
     try {
-      midiData = new Midi(ev.target.result);
+      // @tonejs/midi v2 needs a Uint8Array, not a raw ArrayBuffer
+      const bytes = new Uint8Array(ev.target.result);
+      midiData = new MidiClass(bytes);
       document.getElementById('midi-file-name').textContent = file.name.toUpperCase();
       document.getElementById('midi-play').disabled = false;
       document.getElementById('midi-stop').disabled = false;
@@ -1368,7 +1417,8 @@ document.getElementById('midi-file-input').addEventListener('change', e => {
       ));
       document.getElementById('midi-progress').style.width = '0%';
     } catch(err) {
-      document.getElementById('midi-file-name').textContent = 'ERROR: INVALID MIDI FILE';
+      document.getElementById('midi-file-name').textContent = 'ERROR: ' + err.message;
+      console.error('MIDI parse error:', err);
     }
   };
   reader.readAsArrayBuffer(file);
@@ -1435,7 +1485,9 @@ function midiStartPlayback() {
   }, totalMs + 500);
   midiTimers.push(endTimer);
 
-  document.getElementById('midi-play').textContent = '▶ PLAYING';
+  const playBtn = document.getElementById('midi-play');
+  playBtn.textContent = '⏸ PLAYING';
+  playBtn.classList.add('active');
 }
 
 function midiStopPlayback() {
@@ -1445,7 +1497,9 @@ function midiStopPlayback() {
   // Release all active notes
   [...activeNotes.keys()].forEach(n => noteOff(n));
   [...sfActive.keys()].forEach(n => noteOffSF(n));
-  document.getElementById('midi-play').textContent = '▶ PLAY';
+  const pb = document.getElementById('midi-play');
+  pb.textContent = '▶ PLAY';
+  pb.classList.remove('active');
 }
 
 buildPicker();
