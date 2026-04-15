@@ -886,109 +886,139 @@ const activeNotes = new Map();
 const MAX_POLY = 8;
 const env = { a: 0.01, d: 0.1, s: 0.7, r: 0.3 };
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-window.DRUM_MASTER_VOL = 0.2; // Tweak this in the console!
 
 // ─── DRUM ENGINE ──────────────────────────────────────────────────────────────
+// Uses nbrosowsky/tonejs-instruments hosted samples fetched as AudioBuffers.
+// Routed through a dedicated drumGainNode -> masterGain so volume slider works.
+
+let drumGainNode   = null;
+let drumBuffers    = {};   // midi note -> AudioBuffer
+let drumsLoaded    = false;
+
+// GM drum note -> sample filename mapping (nbrosowsky kit)
+const DRUM_SAMPLES = {
+  35: 'kick',       36: 'kick',
+  38: 'snare',      40: 'snare',
+  37: 'snare',      39: 'snare',
+  42: 'hihat',      44: 'hihat',      46: 'hihat-open',
+  49: 'crash',      57: 'crash',
+  51: 'ride',       53: 'ride',       59: 'ride',
+  52: 'crash',      55: 'crash',
+  41: 'tom-low',    43: 'tom-low',    45: 'tom-mid',
+  47: 'tom-mid',    48: 'tom-high',   50: 'tom-high',
+};
+
+// Per-note gain to balance the kit
 const DRUM_GAIN_OFFSETS = {
-  42: 0.2,  // Closed Hi-Hat
-  44: 0.2,  // Pedal Hi-Hat
-  46: 0.2,  // Open Hi-Hat
-  49: 0.4,  // Crash Cymbal 1
-  51: 0.55,  // Ride Cymbal 1
-  52: 0.55,  // Chinese Cymbal
-  55: 0.55,  // Splash Cymbal
-  57: 0.60,  // Crash Cymbal 2
-  59: 0.55,  // Ride Cymbal 2
+  42: 0.2, 44: 0.2, 46: 0.2,   // hi-hats
+  49: 0.60, 51: 0.55, 52: 0.55,   // cymbals
+  55: 0.55, 57: 0.60, 59: 0.55,
+  35: 0.90, 36: 0.90,              // kick
+  38: 0.7, 40: 0.7,              // snare
 };
 
-const SynthDrumKit = {
-  play: (note, time, opts) => {
-    if (!ctx) return { stop: () => {} };
-    const gainNode = ctx.createGain();
-    
-    // 1. Get the base MIDI volume
-    const baseVol = typeof opts.gain === 'number' ? opts.gain : 1.0;
-    
-    // 2. Check if this specific drum has a custom offset (defaults to 1.0)
-    const offset = DRUM_GAIN_OFFSETS[note] || 1.0; 
-    
-    // 3. Multiply it all together with our new global variable!
-    const finalVol = baseVol * offset * window.DRUM_MASTER_VOL;
-    
-    gainNode.gain.setValueAtTime(Math.max(0.01, finalVol), time);
-    
-    // Route into the synth's main filter
-    gainNode.connect(filterNode); 
-
-
-    // Kick Drum (Notes 35, 36)
-    if (note === 35 || note === 36) {
-      const osc = ctx.createOscillator();
-      osc.connect(gainNode);
-      osc.frequency.setValueAtTime(150, time);
-      osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.5);
-      gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.5);
-      osc.start(time); osc.stop(time + 0.5);
-    }
-    // Snare / Rimshot (Notes 37, 38, 40)
-    else if (note === 37 || note === 38 || note === 40) {
-      const osc = ctx.createOscillator();
-      osc.type = 'triangle';
-      osc.connect(gainNode);
-      osc.frequency.setValueAtTime(250, time);
-      osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.2);
-      osc.start(time); osc.stop(time + 0.2);
-
-      // White noise snap
-      const bufferSize = ctx.sampleRate * 0.2;
-      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
-      const noise = ctx.createBufferSource();
-      noise.buffer = buffer;
-      const hp = ctx.createBiquadFilter();
-      hp.type = 'highpass';
-      hp.frequency.value = note === 37 ? 2000 : 1000;
-      noise.connect(hp);
-      hp.connect(gainNode);
-      noise.start(time);
-      gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
-    }
-    // Hi-Hats & Cymbals (Notes 42, 44, 46, 49, 51, 52, 55, 57, 59)
-    else if ([42, 44, 46, 49, 51, 52, 55, 57, 59].includes(note)) {
-      const isLong = [46, 49, 51, 52, 55, 57, 59].includes(note);
-      const tDur = isLong ? 1.5 : 0.15;
-      const bp = ctx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.value = 8000;
-      bp.connect(gainNode);
-      
-      const ratios = [1, 1.342, 1.231, 1.653, 1.952, 2.152];
-      ratios.forEach(r => {
-        const osc = ctx.createOscillator();
-        osc.type = 'square';
-        osc.frequency.value = 300 * r;
-        osc.connect(bp);
-        osc.start(time);
-        osc.stop(time + tDur);
-      });
-      gainNode.gain.exponentialRampToValueAtTime(0.01, time + tDur);
-    }
-    // Toms and everything else
-    else {
-      const osc = ctx.createOscillator();
-      osc.connect(gainNode);
-      osc.frequency.setValueAtTime(100 + (note - 40) * 8, time);
-      osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.4);
-      gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.4);
-      osc.start(time); osc.stop(time + 0.4);
-    }
-
-    return { stop: () => {} };
+async function loadDrumKit() {
+  if (drumsLoaded) return;
+  if (!drumGainNode && ctx) {
+    drumGainNode = ctx.createGain();
+    drumGainNode.gain.value = 0.85;
+    drumGainNode.connect(masterGain);
   }
-};
 
+  // Always build synthetic drums first so playback never silently fails
+  synthDrumFallback();
+  drumsLoaded = true;
+  console.log('Synth drum fallback ready');
 
+  // Then try to upgrade with real samples in the background
+  const urls = [
+    'https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/percussion-mp3.js',
+    'https://cdn.jsdelivr.net/gh/gleitz/midi-js-soundfonts@gh-pages/FluidR3_GM/percussion-mp3.js',
+  ];
+  for (const url of urls) {
+    try {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = url; s.onload = resolve; s.onerror = reject;
+        document.head.appendChild(s);
+      });
+      // gleitz soundfonts expose MIDI.Soundfont.percussion or window.MIDI_Soundfont_percussion
+      const sf = (window.MIDI && window.MIDI.Soundfont && window.MIDI.Soundfont.percussion)
+               || window['percussion'] || null;
+      if (!sf) break;
+      const entries = Object.entries(sf);
+      let decoded = 0;
+      await Promise.all(entries.map(async ([noteStr, b64]) => {
+        try {
+          const midiNote = parseInt(noteStr);
+          if (isNaN(midiNote)) return;
+          const data = b64.split(',')[1] || b64;
+          const binary = atob(data);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          drumBuffers[midiNote] = await ctx.decodeAudioData(bytes.buffer);
+          decoded++;
+        } catch(e) {}
+      }));
+      if (decoded > 0) {
+        console.log('Drum kit upgraded with real samples:', decoded, 'notes');
+        return;
+      }
+    } catch(e) { console.warn('Drum sample source failed:', url); }
+  }
+}
+
+function synthDrumFallback() {
+  // Generate synthetic drum buffers for key hits
+  const rate = ctx.sampleRate;
+  function makeBuf(fn, dur) {
+    const buf = ctx.createBuffer(1, Math.floor(rate * dur), rate);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < ch.length; i++) fn(ch, i, rate);
+    return buf;
+  }
+  // Kick: sine sweep down
+  const kick = makeBuf((ch, i, r) => {
+    const t = i / r, env = Math.exp(-t * 8);
+    ch[i] = Math.sin(2 * Math.PI * (150 * Math.exp(-t * 20)) * t) * env;
+  }, 0.5);
+  // Snare: noise + tone
+  const snare = makeBuf((ch, i, r) => {
+    const t = i / r, env = Math.exp(-t * 15);
+    ch[i] = ((Math.random() * 2 - 1) * 0.6 + Math.sin(2 * Math.PI * 200 * t) * 0.4) * env;
+  }, 0.3);
+  // Hi-hat: filtered noise
+  const hihat = makeBuf((ch, i, r) => {
+    const t = i / r;
+    ch[i] = (Math.random() * 2 - 1) * Math.exp(-t * 40);
+  }, 0.1);
+  const hihatOpen = makeBuf((ch, i, r) => {
+    const t = i / r;
+    ch[i] = (Math.random() * 2 - 1) * Math.exp(-t * 10);
+  }, 0.4);
+
+  [35,36].forEach(n => drumBuffers[n] = kick);
+  [38,40].forEach(n => drumBuffers[n] = snare);
+  [42,44].forEach(n => drumBuffers[n] = hihat);
+  [46].forEach(n => drumBuffers[n] = hihatOpen);
+}
+
+function playDrumNote(midiNote, velocity) {
+  if (!drumsLoaded || !drumGainNode) return;
+  const buf = drumBuffers[midiNote];
+  if (!buf) return;
+  try {
+    const src  = ctx.createBufferSource();
+    src.buffer = buf;
+    const gain = ctx.createGain();
+    const vel  = velocity / 127;
+    const offset = DRUM_GAIN_OFFSETS[midiNote] || 0.75;
+    gain.gain.value = vel * offset * midiVolume;
+    src.connect(gain);
+    gain.connect(drumGainNode);
+    src.start(ctx.currentTime);
+  } catch(e) { console.error('Drum play error:', e); }
+}
 
 // ─── INSTRUMENT STATE ─────────────────────────────────────────────────────────
 let currentInstrId  = 'oscillator';
@@ -1962,11 +1992,11 @@ async function loadAllTrackInstruments() {
   initAudio();
   const melodicToLoad = [...new Set(midiTracks.map(t => t.instrId))]
     .filter(id => id !== '__drums__' && !sfCache[id]);
-  const needsDrums = midiTracks.some(t => t.instrId === '__drums__') && !sfCache['__drums__'];
+  const needsDrums = midiTracks.some(t => t.instrId === '__drums__') && !drumsLoaded;
   const totalJobs = melodicToLoad.length + (needsDrums ? 1 : 0);
 
   if (!totalJobs) {
-    midiTracks.forEach(t => { t.sfInstr = sfCache[t.instrId] || null; });
+    midiTracks.forEach(t => { t.sfInstr = t.instrId === '__drums__' ? null : (sfCache[t.instrId] || null); });
     document.getElementById('midi-play').disabled = false;
     return;
   }
@@ -1991,16 +2021,14 @@ async function loadAllTrackInstruments() {
     updateStatus();
   }));
 
-  // Load drum kit via our native SynthDrumKit
+  // Load drum kit via nbrosowsky samples
   if (needsDrums) {
     statusEl.textContent = 'LOADING DRUM KIT…';
-    try {
-      sfCache['__drums__'] = SynthDrumKit;
-    } catch(e) { console.error('Drums failed:', e); }
+    try { await loadDrumKit(); } catch(e) { console.error('Drums failed:', e); }
     updateStatus();
   }
 
-  midiTracks.forEach(t => { t.sfInstr = sfCache[t.instrId] || null; });
+  midiTracks.forEach(t => { t.sfInstr = t.instrId === '__drums__' ? null : (sfCache[t.instrId] || null); });
   statusEl.textContent = '✓ ALL INSTRUMENTS READY';
   setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
   document.getElementById('midi-play').disabled = false;
@@ -2126,7 +2154,7 @@ function midiSchedule() {
   midiData.tracks.forEach((rawTrack, rawIdx) => {
     const track = midiTracks.find(t => t.index === rawIdx);
     if (!track) return;
-    if (!track.sfInstr) return;
+    if (!track.sfInstr && track.instrId !== '__drums__') return;
 
     rawTrack.notes.forEach(note => {
       const absStart = note.time * tempoScale;
@@ -2141,16 +2169,15 @@ function midiSchedule() {
         const shouldPlay = anySoloed ? track.soloed : !track.muted;
         if (!shouldPlay) return;
         try {
-          if (track.sfInstr) {
+          if (track.instrId === '__drums__') {
+            playDrumNote(note.midi, Math.round(note.velocity * 127));
+            highlightKey(note.midi, true);
+          } else if (track.sfInstr) {
             if (track.noteActive.has(note.midi)) {
               try { track.noteActive.get(note.midi).stop(); } catch(e) {}
             }
-            const drumOffset = (track.instrId === '__drums__')
-              ? (DRUM_GAIN_OFFSETS[note.midi] || 0.75)
-              : 1.0;
             const node = track.sfInstr.play(note.midi, ctx.currentTime, {
-              gain: note.velocity * midiVolume * drumOffset,
-              duration: absDur + 1,
+              gain: note.velocity * midiVolume, duration: absDur + 1,
             });
             track.noteActive.set(note.midi, node);
             highlightKey(note.midi, true);
@@ -2161,7 +2188,7 @@ function midiSchedule() {
       const offTimer = setTimeout(() => {
         if (!midiPlaying) return;
         try {
-          if (track.noteActive.has(note.midi)) {
+          if (track.instrId !== '__drums__' && track.noteActive.has(note.midi)) {
             try { track.noteActive.get(note.midi).stop(ctx.currentTime + 0.05); } catch(e) {}
             track.noteActive.delete(note.midi);
           }
