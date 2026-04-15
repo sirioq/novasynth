@@ -7,7 +7,6 @@
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.28/build/Midi.js"></script>
-<script src="https://surikov.github.io/webaudiofont/npm/dist/WebAudioFontPlayer.js"></script>
 <style>
   :root {
     --bg:#0a0a0f; --panel:#111118; --border:#1e1e2e;
@@ -478,6 +477,22 @@
   <div class="section">
     <div class="section-title">// CHORD MODE</div>
     <div id="chord-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px;"></div>
+    <div id="key-selector-row" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+      <div style="font-family:'Orbitron',sans-serif;font-size:0.5rem;letter-spacing:0.2em;color:var(--dim);margin-bottom:8px;">KEY</div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <select id="key-root" style="background:var(--knob-bg);border:1px solid var(--border);border-radius:4px;color:var(--accent3);font-family:'Share Tech Mono',monospace;font-size:0.7rem;padding:6px 8px;cursor:pointer;-webkit-appearance:none;appearance:none;flex:1;min-width:70px;">
+          <option value="0">C</option><option value="1">C#</option><option value="2">D</option>
+          <option value="3">D#</option><option value="4">E</option><option value="5">F</option>
+          <option value="6">F#</option><option value="7">G</option><option value="8">G#</option>
+          <option value="9">A</option><option value="10">A#</option><option value="11">B</option>
+        </select>
+        <select id="key-scale" style="background:var(--knob-bg);border:1px solid var(--border);border-radius:4px;color:var(--accent3);font-family:'Share Tech Mono',monospace;font-size:0.7rem;padding:6px 8px;cursor:pointer;-webkit-appearance:none;appearance:none;flex:1;min-width:80px;">
+          <option value="major">MAJOR</option>
+          <option value="minor">MINOR</option>
+        </select>
+        <div id="key-chord-label" style="font-family:'Orbitron',sans-serif;font-size:0.65rem;color:var(--accent);letter-spacing:0.1em;min-width:90px;text-align:right;"></div>
+      </div>
+    </div>
   </div>
 
   <!-- KEYBOARD VIS -->
@@ -512,8 +527,13 @@
       <button class="scope-btn" id="midi-stop" style="flex:1" disabled>■ STOP</button>
     </div>
     <div style="margin-bottom:8px;">
-      <div class="knob-label" style="margin-bottom:4px">TEMPO <span id="midi-tempo-val" style="color:var(--accent3)">100%</span></div>
-      <input type="range" class="horiz" id="midi-tempo" min="25" max="200" step="1" value="100">
+      <div class="knob-label" style="margin-bottom:4px">TEMPO</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
+        <button class="scope-btn" id="tempo-50" onclick="setMidiTempo(50)">50%</button>
+        <button class="scope-btn active" id="tempo-100" onclick="setMidiTempo(100)">100%</button>
+        <button class="scope-btn" id="tempo-75" onclick="setMidiTempo(75)">75%</button>
+      </div>
+      <input type="hidden" id="midi-tempo" value="100">
     </div>
     <div style="margin-bottom:10px;">
       <div class="knob-label" style="margin-bottom:4px">MIDI VOLUME <span id="midi-vol-val" style="color:var(--accent3)">100%</span></div>
@@ -866,59 +886,109 @@ const activeNotes = new Map();
 const MAX_POLY = 8;
 const env = { a: 0.01, d: 0.1, s: 0.7, r: 0.3 };
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+window.DRUM_MASTER_VOL = 0.2; // Tweak this in the console!
 
 // ─── DRUM ENGINE ──────────────────────────────────────────────────────────────
-let wafPlayer    = null;   // WebAudioFontPlayer instance
-let drumsLoaded  = false;
-const drumPresets = {};    // note -> preset object from WebAudioFont
+const DRUM_GAIN_OFFSETS = {
+  42: 0.2,  // Closed Hi-Hat
+  44: 0.2,  // Pedal Hi-Hat
+  46: 0.2,  // Open Hi-Hat
+  49: 0.4,  // Crash Cymbal 1
+  51: 0.55,  // Ride Cymbal 1
+  52: 0.55,  // Chinese Cymbal
+  55: 0.55,  // Splash Cymbal
+  57: 0.60,  // Crash Cymbal 2
+  59: 0.55,  // Ride Cymbal 2
+};
 
-// All 47 GM percussion notes
-const GM_DRUM_NOTES = [
-  35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,
-  51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,
-  67,68,69,70,71,72,73,74,75,76,77,78,79,80,81
-];
+const SynthDrumKit = {
+  play: (note, time, opts) => {
+    if (!ctx) return { stop: () => {} };
+    const gainNode = ctx.createGain();
+    
+    // 1. Get the base MIDI volume
+    const baseVol = typeof opts.gain === 'number' ? opts.gain : 1.0;
+    
+    // 2. Check if this specific drum has a custom offset (defaults to 1.0)
+    const offset = DRUM_GAIN_OFFSETS[note] || 1.0; 
+    
+    // 3. Multiply it all together with our new global variable!
+    const finalVol = baseVol * offset * window.DRUM_MASTER_VOL;
+    
+    gainNode.gain.setValueAtTime(Math.max(0.01, finalVol), time);
+    
+    // Route into the synth's main filter
+    gainNode.connect(filterNode); 
 
-function drumVarName(note) {
-  return '_drum_' + note + '_0_JCLive_sf2_file';
-}
-function drumFileUrl(note) {
-  return 'https://surikov.github.io/webaudiofontdata/sound/128' + note + '_0_JCLive_sf2_file.js';
-}
 
-async function loadDrumKit() {
-  if (drumsLoaded) return;
-  if (!wafPlayer) wafPlayer = new WebAudioFontPlayer();
-  return new Promise(resolve => {
-    let remaining = GM_DRUM_NOTES.length;
-    GM_DRUM_NOTES.forEach(note => {
-      const varName = drumVarName(note);
-      const url     = drumFileUrl(note);
-      wafPlayer.loader.startLoad(ctx, url, varName);
-      wafPlayer.loader.waitLoad(() => {
-        drumPresets[note] = window[varName] || null;
-        remaining--;
-        if (remaining === 0) {
-          drumsLoaded = true;
-          const loaded = Object.values(drumPresets).filter(Boolean).length;
-          console.log('Drum kit loaded. Presets ready:', loaded, '/', GM_DRUM_NOTES.length);
-          resolve();
-        }
+    // Kick Drum (Notes 35, 36)
+    if (note === 35 || note === 36) {
+      const osc = ctx.createOscillator();
+      osc.connect(gainNode);
+      osc.frequency.setValueAtTime(150, time);
+      osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.5);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.5);
+      osc.start(time); osc.stop(time + 0.5);
+    }
+    // Snare / Rimshot (Notes 37, 38, 40)
+    else if (note === 37 || note === 38 || note === 40) {
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.connect(gainNode);
+      osc.frequency.setValueAtTime(250, time);
+      osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.2);
+      osc.start(time); osc.stop(time + 0.2);
+
+      // White noise snap
+      const bufferSize = ctx.sampleRate * 0.2;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = note === 37 ? 2000 : 1000;
+      noise.connect(hp);
+      hp.connect(gainNode);
+      noise.start(time);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
+    }
+    // Hi-Hats & Cymbals (Notes 42, 44, 46, 49, 51, 52, 55, 57, 59)
+    else if ([42, 44, 46, 49, 51, 52, 55, 57, 59].includes(note)) {
+      const isLong = [46, 49, 51, 52, 55, 57, 59].includes(note);
+      const tDur = isLong ? 1.5 : 0.15;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 8000;
+      bp.connect(gainNode);
+      
+      const ratios = [1, 1.342, 1.231, 1.653, 1.952, 2.152];
+      ratios.forEach(r => {
+        const osc = ctx.createOscillator();
+        osc.type = 'square';
+        osc.frequency.value = 300 * r;
+        osc.connect(bp);
+        osc.start(time);
+        osc.stop(time + tDur);
       });
-    });
-  });
-}
+      gainNode.gain.exponentialRampToValueAtTime(0.01, time + tDur);
+    }
+    // Toms and everything else
+    else {
+      const osc = ctx.createOscillator();
+      osc.connect(gainNode);
+      osc.frequency.setValueAtTime(100 + (note - 40) * 8, time);
+      osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.4);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.4);
+      osc.start(time); osc.stop(time + 0.4);
+    }
 
-function playDrumNote(note, velocity) {
-  if (!wafPlayer || !drumsLoaded) { console.log('drum skip: waf=',!!wafPlayer,'loaded=',drumsLoaded); return; }
-  const preset = drumPresets[note];
-  if (!preset) { console.log('no preset for note', note); return; }
-  try {
-    const gain = (velocity / 127) * midiVolume;
-    console.log('drum play note', note, 'gain', gain.toFixed(3), 'ctx state', ctx.state);
-    wafPlayer.queueWaveTable(ctx, ctx.destination, preset, 0, note, 1, gain);
-  } catch(e) { console.error('drum play error', note, e); }
-}
+    return { stop: () => {} };
+  }
+};
+
+
 
 // ─── INSTRUMENT STATE ─────────────────────────────────────────────────────────
 let currentInstrId  = 'oscillator';
@@ -1005,6 +1075,7 @@ function buildChordButtons() {
     {id:'maj7',   label:'MAJ 7'},
     {id:'min7',   label:'MIN 7'},
     {id:'maj9',   label:'MAJ 9'},
+    {id:'key',    label:'KEY'},
   ];
   chords.forEach(ch => {
     const btn = document.createElement('button');
@@ -1015,11 +1086,23 @@ function buildChordButtons() {
       chordMode = ch.id;
       document.querySelectorAll('.chord-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      // Show/hide key selector
+      document.getElementById('key-selector-row').style.display = ch.id === 'key' ? 'block' : 'none';
       // Stop any held chord notes when switching
       chordNotes.forEach((notes, root) => notes.forEach(n => noteOff(n)));
       chordNotes.clear();
     });
     grid.appendChild(btn);
+  });
+
+  // Wire up key selectors to clear held notes on change
+  document.getElementById('key-root').addEventListener('change', () => {
+    chordNotes.forEach((notes) => notes.forEach(n => noteOff(n)));
+    chordNotes.clear();
+  });
+  document.getElementById('key-scale').addEventListener('change', () => {
+    chordNotes.forEach((notes) => notes.forEach(n => noteOff(n)));
+    chordNotes.clear();
   });
 }
 
@@ -1332,10 +1415,44 @@ const CHORD_INTERVALS = {
   'dom7':     [4, 7, 10],
   'maj9':     [4, 7, 11, 14],
 };
+
+// Semitone offsets of scale degrees for major and natural minor
+const SCALE_INTERVALS = {
+  major: [0, 2, 4, 5, 7, 9, 11],
+  minor: [0, 2, 3, 5, 7, 8, 10],
+};
+// Chord quality per scale degree: major=0, minor=1, diminished=2
+const SCALE_CHORD_QUALITIES = {
+  major: ['major', 'minor', 'minor', 'major', 'major', 'minor', 'dim'],
+  minor: ['minor', 'dim',   'major', 'minor', 'minor', 'major', 'major'],
+};
 let chordMode = 'off';
 const chordNotes = new Map(); // root note -> [chord notes played]
 
 function chordNotesFor(root) {
+  if (chordMode === 'key') {
+    const keyRoot  = parseInt(document.getElementById('key-root').value);
+    const scale    = document.getElementById('key-scale').value;
+    const semitones = SCALE_INTERVALS[scale];
+    const qualities = SCALE_CHORD_QUALITIES[scale];
+
+    // Find which scale degree this note belongs to (if any)
+    const noteClass = root % 12;
+    const offset    = ((noteClass - keyRoot) % 12 + 12) % 12;
+    const degree    = semitones.indexOf(offset);
+
+    // Update label
+    const label = document.getElementById('key-chord-label');
+    if (degree === -1) {
+      label.textContent = NOTE_NAMES[noteClass] + ' — OUT OF KEY';
+      label.style.color = 'var(--accent2)';
+      return []; // note not in key — play single note only
+    }
+    const quality = qualities[degree];
+    label.textContent = NOTE_NAMES[noteClass] + ' ' + quality.toUpperCase();
+    label.style.color = 'var(--accent)';
+    return (CHORD_INTERVALS[quality] || []).map(i => root + i).filter(n => n <= 127);
+  }
   const intervals = CHORD_INTERVALS[chordMode] || [];
   return intervals.map(i => root + i).filter(n => n <= 127);
 }
@@ -1845,11 +1962,11 @@ async function loadAllTrackInstruments() {
   initAudio();
   const melodicToLoad = [...new Set(midiTracks.map(t => t.instrId))]
     .filter(id => id !== '__drums__' && !sfCache[id]);
-  const needsDrums = midiTracks.some(t => t.instrId === '__drums__') && !drumsLoaded;
+  const needsDrums = midiTracks.some(t => t.instrId === '__drums__') && !sfCache['__drums__'];
   const totalJobs = melodicToLoad.length + (needsDrums ? 1 : 0);
 
   if (!totalJobs) {
-    midiTracks.forEach(t => { t.sfInstr = t.instrId === '__drums__' ? null : (sfCache[t.instrId] || null); });
+    midiTracks.forEach(t => { t.sfInstr = sfCache[t.instrId] || null; });
     document.getElementById('midi-play').disabled = false;
     return;
   }
@@ -1874,14 +1991,16 @@ async function loadAllTrackInstruments() {
     updateStatus();
   }));
 
-  // Load drum kit via WebAudioFont
+  // Load drum kit via our native SynthDrumKit
   if (needsDrums) {
     statusEl.textContent = 'LOADING DRUM KIT…';
-    try { await loadDrumKit(); } catch(e) { console.error('Drums failed:', e); }
+    try {
+      sfCache['__drums__'] = SynthDrumKit;
+    } catch(e) { console.error('Drums failed:', e); }
     updateStatus();
   }
 
-  midiTracks.forEach(t => { t.sfInstr = t.instrId === '__drums__' ? null : (sfCache[t.instrId] || null); });
+  midiTracks.forEach(t => { t.sfInstr = sfCache[t.instrId] || null; });
   statusEl.textContent = '✓ ALL INSTRUMENTS READY';
   setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
   document.getElementById('midi-play').disabled = false;
@@ -1958,14 +2077,28 @@ document.getElementById('midi-stop').addEventListener('click', () => {
   updateScrubBar(0);
 });
 
-document.getElementById('midi-tempo').addEventListener('input', e => {
-  document.getElementById('midi-tempo-val').textContent = e.target.value + '%';
+function setMidiTempo(pct) {
   if (midiPlaying) {
-    midiPosition += ctx.currentTime - midiStartTime;
+    // Capture old tempo scale BEFORE updating the slider value
+    const oldTempoScale = 100 / parseInt(document.getElementById('midi-tempo').value);
+    const realElapsed = ctx.currentTime - midiStartTime;
+    midiPosition += realElapsed / oldTempoScale;
+    midiStartTime = ctx.currentTime;
+    document.getElementById('midi-tempo').value = pct;
+    ['50','75','100'].forEach(v => {
+      const btn = document.getElementById('tempo-' + v);
+      if (btn) btn.classList.toggle('active', parseInt(v) === pct);
+    });
     midiStopTimers();
     midiSchedule();
+  } else {
+    document.getElementById('midi-tempo').value = pct;
+    ['50','75','100'].forEach(v => {
+      const btn = document.getElementById('tempo-' + v);
+      if (btn) btn.classList.toggle('active', parseInt(v) === pct);
+    });
   }
-});
+}
 
 document.getElementById('midi-vol').addEventListener('input', e => {
   midiVolume = parseFloat(e.target.value);
@@ -1993,7 +2126,7 @@ function midiSchedule() {
   midiData.tracks.forEach((rawTrack, rawIdx) => {
     const track = midiTracks.find(t => t.index === rawIdx);
     if (!track) return;
-    if (!track.sfInstr && track.instrId !== '__drums__') return;
+    if (!track.sfInstr) return;
 
     rawTrack.notes.forEach(note => {
       const absStart = note.time * tempoScale;
@@ -2008,16 +2141,16 @@ function midiSchedule() {
         const shouldPlay = anySoloed ? track.soloed : !track.muted;
         if (!shouldPlay) return;
         try {
-          if (track.instrId === '__drums__') {
-            // Route drums through WebAudioFont
-            playDrumNote(note.midi, Math.round(note.velocity * 127));
-            highlightKey(note.midi, true);
-          } else if (track.sfInstr) {
+          if (track.sfInstr) {
             if (track.noteActive.has(note.midi)) {
               try { track.noteActive.get(note.midi).stop(); } catch(e) {}
             }
+            const drumOffset = (track.instrId === '__drums__')
+              ? (DRUM_GAIN_OFFSETS[note.midi] || 0.75)
+              : 1.0;
             const node = track.sfInstr.play(note.midi, ctx.currentTime, {
-              gain: (note.velocity) * midiVolume, duration: absDur + 1,
+              gain: note.velocity * midiVolume * drumOffset,
+              duration: absDur + 1,
             });
             track.noteActive.set(note.midi, node);
             highlightKey(note.midi, true);
@@ -2028,8 +2161,8 @@ function midiSchedule() {
       const offTimer = setTimeout(() => {
         if (!midiPlaying) return;
         try {
-          if (track.instrId !== '__drums__' && track.noteActive.has(note.midi)) {
-            track.noteActive.get(note.midi).stop(ctx.currentTime + 0.05);
+          if (track.noteActive.has(note.midi)) {
+            try { track.noteActive.get(note.midi).stop(ctx.currentTime + 0.05); } catch(e) {}
             track.noteActive.delete(note.midi);
           }
           highlightKey(note.midi, false);
