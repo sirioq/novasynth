@@ -941,7 +941,7 @@ const SAMPLE_CONFIG = {
 
 const DRUM_GAIN_OFFSETS = {
   // Core
-  35: 0.5, 36: 0.5,    // Kicks
+  35: 1, 36: 1,    // Kicks
   38: 0.85, 40: 0.85,  // Snares
   37: 0.65,            // Side Stick (Usually quieter/woody)
   
@@ -1038,7 +1038,10 @@ function playDrumNote(midiNote, velocity) {
   src.playbackRate.setValueAtTime(0.98 + Math.random() * 0.04, ctx.currentTime);
 
   const gain = ctx.createGain();
-  const offset = DRUM_GAIN_OFFSETS[midiNote] || 0.75;
+
+  // Look up the note in your mixing board. If not found, use a safe default (like 0.5)
+  const offset = (DRUM_GAIN_OFFSETS[midiNote] !== undefined) ? DRUM_GAIN_OFFSETS[midiNote] : 0.5;
+
   gain.gain.value = (velocity / 127) * offset * (window.DRUM_MASTER_VOL || 1.0);
   
   src.connect(gain);
