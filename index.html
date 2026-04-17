@@ -267,6 +267,19 @@
   .start-note{margin-top:24px;font-family:'Share Tech Mono',monospace;
     font-size:0.6rem;letter-spacing:0.12em;color:#2a3548;}
 
+  /* DRUM KIT BUTTONS */
+  .drum-kit-btn{background:var(--knob-bg);border:1px solid var(--border);border-radius:5px;
+    color:var(--dim);font-family:'Share Tech Mono',monospace;font-size:0.65rem;
+    letter-spacing:0.1em;padding:10px 14px;cursor:pointer;
+    transition:all 0.15s;-webkit-tap-highlight-color:transparent;
+    display:flex;flex-direction:column;align-items:center;gap:3px;}
+  .drum-kit-btn .kit-emoji{font-size:1.2rem;}
+  .drum-kit-btn.active{border-color:var(--accent2);color:var(--accent2);
+    background:rgba(255,45,120,0.08);box-shadow:0 0 10px rgba(255,45,120,0.15);}
+  .drum-kit-btn.loading{border-color:var(--accent3);color:var(--accent3);
+    animation:kitpulse 0.8s ease-in-out infinite;}
+  @keyframes kitpulse{0%,100%{opacity:1;}50%{opacity:0.4;}}
+
   footer{margin-top:16px;font-size:0.55rem;letter-spacing:0.15em;color:var(--dim);
     text-align:center;line-height:2;}
 </style>
@@ -506,6 +519,19 @@
     <div class="kb-hint" style="margin-top:8px">
       <span>A S D F G H J K L</span> = white keys &nbsp;|&nbsp; <span>W E T Y U O P</span> = black keys<br>
       <span>Z</span> = oct down &nbsp;|&nbsp; <span>X</span> = oct up
+    </div>
+  </div>
+
+  <!-- DRUM KIT SELECTOR -->
+  <div class="section" id="drum-kit-section">
+    <div class="section-title">// DRUM KIT
+      <span id="drum-kit-status" style="color:var(--accent3);font-size:0.55rem;display:none;">LOADING…</span>
+    </div>
+    <div id="drum-kit-btns" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:8px;">
+      <div class="knob-label">DRUM VOL</div>
+      <input type="range" class="horiz" id="drum-vol" min="0" max="1" step="0.01" value="0.5" style="flex:1">
+      <div class="knob-val" id="drum-vol-val">50%</div>
     </div>
   </div>
 
@@ -887,166 +913,177 @@ const MAX_POLY = 8;
 const env = { a: 0.01, d: 0.1, s: 0.7, r: 0.3 };
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 
-// --- GLOBAL SAMPLE STORAGE ---
-const sampleVault = {};
-window.DRUM_MASTER_VOL = 0.5; 
+// ─── DRUM KIT REGISTRY ────────────────────────────────────────────────────────
+// To add a new kit: add an entry here with the folder number and a label.
+// Files must be named {GM_note}.wav inside samples/{id}/
+const DRUM_KIT_REGISTRY = [
+  { id: 1,  label: 'ACOUSTIC',   emoji: '🥁' },
+  { id: 25, label: 'ELECTRO', emoji: '⚡' },
+  { id: 26, label: 'DETROIT', emoji: '🎛️'},
+  { id: 33, label: 'LATIN', emoji: '🪇'},
+  { id: 35, label: '80s', emoji: '📻'},
+  { id: 49, label: 'FUNK', emoji: '🪩'},
+  // Add more kits here, e.g.: { id: 42, label: 'JAZZ', emoji: '🎷' }
+];
 
-async function loadDrumSample(name, url) {
-  try {
-    const response = await fetch(url);
-    const arrayBuffer = await response.arrayBuffer();
-    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-    sampleVault[name] = audioBuffer;
-    console.log(`Loaded Sample: ${name}`);
-  } catch (e) {
-    console.error(`Failed to load sample: ${url}`, e);
-  }
-}
+const KIT_MASTER_GAINS = {
+  1:  0.8,   // Acoustic (Balanced)
+  25: 0.75,  // CR-78 (Soft analog)
+  26: 1.25,  // TR-909 (The Detroit "Beef")
+  33: 0.9,   // TR-505 (Dry digital)
+  35: 1.1,   // LinnDrum (Powerful 80s)
+  49: 0.6    // MRK-2 (Quiet vintage)
+};
 
-// ─── SCALABLE DRUM ENGINE ──────────────────────────────────────────────────
-let drumGainNode = null;
-let drumBanks = {};    // We'll store arrays of buffers here dynamically
-let drumBuffers = {};  // Fallback storage
-let drumsLoaded = false;
+
+
+// GM note numbers to attempt loading for each kit
+const GM_DRUM_NOTES = [
+  35, 36,           // Kicks
+  37, 38, 39, 40,   // Snare / sidestick / clap
+  41, 42, 43, 44,   // Low tom / closed HH / mid tom / pedal HH
+  45, 46, 47, 48,   // Mid tom / open HH / high-mid tom / high tom
+  49, 50, 51, 52,   // Crash 1 / high tom / ride / china
+  53, 54, 55, 56,   // Ride bell / tambourine / splash / cowbell
+  57, 58, 59, 60,   // Crash 2 / vibraslap / ride 2
+  61, 62, 63, 64,   // Mute hi conga / hi conga / low conga
+  65, 70, 73, 74, 75, 82  // Maracas / shaker
+];
+
+const DRUM_GAIN_OFFSETS = {
+  35: 1.0,  36: 1.0,          // Kicks
+  38: 0.85, 40: 0.85,         // Snares
+  37: 0.65,                   // Side Stick
+  42: 0.35, 44: 0.35, 46: 0.45, // Hats
+  41: 0.8,  43: 0.8,  45: 0.8, 47: 0.8, 48: 0.8, 50: 0.8, // Toms
+  49: 0.5,  51: 0.4,  52: 0.45, 53: 0.4, 55: 0.45, 57: 0.5, 59: 0.4, // Cymbals
+  54: 0.45, 56: 0.6, 58: 0.5,
+  62: 0.7,  63: 0.7,
+
+// --- LATIN & PERCUSSION (For 505, Linn, and MRK-2) ---
+  60: 0.7, 61: 0.7,           // Bongos (MRK-2 / Linn)
+  64: 0.7, 65: 0.7,           // Low Conga & Timbale (505 / Linn)
+  69: 0.5,                    // Cabasa (Linn - keep this low like the hats!)
+  70: 0.5,                    // Maracas/Shaker
+  73: 0.6, 74: 0.6,           // Guiros (CR-78)
+  75: 0.65,                   // Claves (MRK-2)
+  
+  // --- ADDITIONAL TOMS (For the Linn "LL" and "HH" variants) ---
+  50: 0.8,                    // High Tom (Already in your list, just confirming)
+  
+  // --- CLAP TWEAK ---
+  39: 0.85                    // Handclap (Boosted slightly from 0.75 for that 909/Linn impact)
+
+};
 
 const GITHUB_SAMPLES_URL = "https://raw.githubusercontent.com/sirioq/novasynth/main/samples/";
 
-// --- THE MASTER LIST: JUST ADD TO THIS AS YOU GROW ---
-const SAMPLE_CONFIG = {
-  // --- THE CORE TRINITY ---
-  kick:       { files: ['kick_1.wav', 'kick_2.wav', 'kick_3.wav'], notes: [35, 36] },
-  snare:      { files: ['snare_1.wav', 'snare_2.wav', 'snare_3.wav'], notes: [38, 40] },
-  hihat:      { files: ['hh_1.wav', 'hh_2.wav', 'hh_3.wav'], notes: [42, 44, 46] },
+// Per-kit buffer cache: kitBufferCache[kitId][midiNote] = AudioBuffer
+const kitBufferCache = {};
+let drumGainNode    = null;
+let activeDrumKitId = DRUM_KIT_REGISTRY[0].id;
+let drumsLoaded     = false;
 
-  // --- THE METAL (CYMBALS) ---
-  crash:      { files: ['crash_1.wav'], notes: [49, 52, 55, 57] },
-  ride:       { files: ['ride_1.wav'],  notes: [51, 59] },
-  splash:     { files: ['splash_1.wav'], notes: [55] },
-  chinese:    { files: ['china_1.wav'],  notes: [52] },
+// Synth fallback buffers (used while real samples load, or if a note is missing)
+let synthFallbackBuffers = {};
 
-  // --- THE SKINS (TOMS) ---
-  toms_low:   { files: ['tom_low.wav'],  notes: [41, 43] },
-  toms_mid:   { files: ['tom_mid.wav'],  notes: [45, 47] },
-  toms_high:  { files: ['tom_hi.wav'],   notes: [48, 50] },
-
-  // --- AUXILIARY PERCUSSION ---
-  sidestick:  { files: ['stick_1.wav'],      notes: [37] },
-  clap:       { files: ['clap_1.wav'],       notes: [39] },
-  cowbell:    { files: ['cowbell_1.wav'],    notes: [56] },
-  tambourine: { files: ['tambourine_1.wav'], notes: [54] },
-  vibraslap:  { files: ['vibraslap_1.wav'],  notes: [58] },
-  shaker:     { files: ['shaker_1.wav'],     notes: [70, 82] },
-  conga:      { files: ['conga_1.wav'],      notes: [62, 63, 64] }
-};
-
-const DRUM_GAIN_OFFSETS = {
-  // Core
-  35: 1, 36: 1,    // Kicks
-  38: 0.85, 40: 0.85,  // Snares
-  37: 0.65,            // Side Stick (Usually quieter/woody)
-  
-  // Hats (Keep these delicate)
-  42: 0.35, 44: 0.35, 46: 0.45, 
-
-  // Toms (Need presence)
-  41: 0.8, 43: 0.8, 45: 0.8, 47: 0.8, 48: 0.8, 50: 0.8,
-
-  // Metals (Turn these down! High frequencies cut through easily)
-  49: 0.5, 51: 0.4, 52: 0.45, 53: 0.4, 55: 0.45, 57: 0.5, 59: 0.4,
-
-  // Toys & Percussion
-  39: 0.75,            // Clap
-  54: 0.45,            // Tambourine (The "Brown Eyed Girl" shimmer)
-  56: 0.6,             // Cowbell
-  58: 0.5,             // Vibraslap
-  62: 0.7, 63: 0.7     // Congas
-};
-
-async function loadDrumKit() {
-  if (drumsLoaded) return;
-  if (!drumGainNode && ctx) {
-    drumGainNode = ctx.createGain();
-    drumGainNode.gain.value = 0.85;
-    drumGainNode.connect(masterGain); 
-  }
-
-  function synthDrumFallback() {
+function buildSynthFallback() {
+  if (!ctx) return;
   const rate = ctx.sampleRate;
   const makeBuf = (fn, dur) => {
     const buf = ctx.createBuffer(1, Math.floor(rate * dur), rate);
-    const ch = buf.getChannelData(0);
+    const ch  = buf.getChannelData(0);
     for (let i = 0; i < ch.length; i++) fn(ch, i, rate);
     return buf;
   };
-
-  const k = makeBuf((ch,i,r)=>{const t=i/r; ch[i]=Math.sin(2*Math.PI*(150*Math.exp(-t*20))*t)*Math.exp(-t*8)}, 0.5);
-  const s = makeBuf((ch,i,r)=>{const t=i/r; ch[i]=((Math.random()*2-1)*0.6)*Math.exp(-t*15)}, 0.3);
-  const h = makeBuf((ch,i,r)=>{const t=i/r; ch[i]=(Math.random()*2-1)*Math.exp(-t*40)}, 0.1);
-
-  [35,36].forEach(n => drumBuffers[n] = k);
-  [38,40].forEach(n => drumBuffers[n] = s);
-  [42,44,46].forEach(n => drumBuffers[n] = h);
-  
-  console.log('🎹 Synth drum fallback ready');
+  const k = makeBuf((ch,i,r)=>{ const t=i/r; ch[i]=Math.sin(2*Math.PI*(150*Math.exp(-t*20))*t)*Math.exp(-t*8); }, 0.5);
+  const s = makeBuf((ch,i,r)=>{ const t=i/r; ch[i]=((Math.random()*2-1)*0.6)*Math.exp(-t*15); }, 0.3);
+  const h = makeBuf((ch,i,r)=>{ const t=i/r; ch[i]=(Math.random()*2-1)*Math.exp(-t*40); }, 0.1);
+  [35,36].forEach(n => synthFallbackBuffers[n] = k);
+  [38,39,40].forEach(n => synthFallbackBuffers[n] = s);
+  [42,44,46].forEach(n => synthFallbackBuffers[n] = h);
 }
 
+async function loadDrumKit(kitId, onProgress) {
+  kitId = kitId || activeDrumKitId;
+  if (!drumGainNode && ctx) {
+    drumGainNode = ctx.createGain();
+    drumGainNode.gain.value = 0.85;
+    drumGainNode.connect(masterGain);
+  }
+  buildSynthFallback();
+  drumsLoaded = true; // fallback is ready immediately
 
-  synthDrumFallback();
-  drumsLoaded = true;
-
-  // Dynamically load everything in SAMPLE_CONFIG
-  await Promise.all(Object.keys(SAMPLE_CONFIG).map(async (key) => {
-    drumBanks[key] = []; // Initialize the bank
-    const item = SAMPLE_CONFIG[key];
-    
-    for (const fileName of item.files) {
-      try {
-        const res = await fetch(GITHUB_SAMPLES_URL + fileName);
-        if (!res.ok) throw new Error();
-        const arrayBuf = await res.arrayBuffer();
-        const audioBuf = await ctx.decodeAudioData(arrayBuf);
-        drumBanks[key].push(audioBuf);
-        console.log(`✅ Loaded: ${fileName}`);
-      } catch (e) {
-        console.warn(`⚠️ Missing: ${fileName}`);
-      }
-    }
-  }));
-}
-
-function playDrumNote(midiNote, velocity) {
-  if (!drumsLoaded || !drumGainNode) return;
-
-  // DYNAMIC SEARCH: Find which bank contains this MIDI note
-  let activeBank = null;
-  for (const key in SAMPLE_CONFIG) {
-    if (SAMPLE_CONFIG[key].notes.includes(midiNote)) {
-      activeBank = drumBanks[key];
-      break;
-    }
+  if (kitBufferCache[kitId]) {
+    activeDrumKitId = kitId;
+    return; // already cached
   }
 
-  // Pick random sample from bank, or use the synth fallback
-  const buf = (activeBank && activeBank.length > 0) 
-    ? activeBank[Math.floor(Math.random() * activeBank.length)] 
-    : drumBuffers[midiNote];
+  kitBufferCache[kitId] = {};
+  const baseUrl = GITHUB_SAMPLES_URL + kitId + '/';
+  let loaded = 0;
+  await Promise.all(GM_DRUM_NOTES.map(async (note) => {
+    try {
+      const res = await fetch(baseUrl + note + '.wav');
+      if (!res.ok) throw new Error('missing');
+      const arrayBuf  = await res.arrayBuffer();
+      const audioBuf  = await ctx.decodeAudioData(arrayBuf);
+      kitBufferCache[kitId][note] = audioBuf;
+      loaded++;
+      if (onProgress) onProgress(loaded, GM_DRUM_NOTES.length);
+      console.log(`✅ Kit ${kitId}: ${note}.wav`);
+    } catch (e) {
+      console.warn(`⚠️ Kit ${kitId}: missing ${note}.wav`);
+    }
+  }));
+  activeDrumKitId = kitId;
+  console.log(`🥁 Kit ${kitId} loaded (${loaded}/${GM_DRUM_NOTES.length} samples)`);
+}
 
+// Switch to a different kit (loads if not cached, then switches instantly)
+async function switchDrumKit(kitId, statusEl) {
+  if (statusEl) { statusEl.textContent = 'LOADING…'; statusEl.style.display = 'block'; }
+  await loadDrumKit(kitId, (n, total) => {
+    if (statusEl) statusEl.textContent = `LOADING ${n}/${total}`;
+  });
+  activeDrumKitId = kitId;
+  updateDrumKitUI();
+  if (statusEl) { statusEl.textContent = '✓ READY'; setTimeout(() => { statusEl.style.display = 'none'; }, 1200); }
+}
+
+function updateDrumKitUI() {
+  document.querySelectorAll('.drum-kit-btn').forEach(btn => {
+    btn.classList.toggle('active', parseInt(btn.dataset.kitId) === activeDrumKitId);
+  });
+}
+
+function playDrumNote(midiNote, velocity, time) {
+  if (!drumsLoaded || !drumGainNode) return;
+  const playAt = (time !== undefined) ? time : ctx.currentTime;
+
+  // Look up in active kit first, fall back to synth buffers
+  const kitBufs = kitBufferCache[activeDrumKitId] || {};
+  const buf = kitBufs[midiNote] || synthFallbackBuffers[midiNote];
   if (!buf) return;
 
   const src = ctx.createBufferSource();
   src.buffer = buf;
-  src.playbackRate.setValueAtTime(0.98 + Math.random() * 0.04, ctx.currentTime);
+  src.playbackRate.setValueAtTime(0.98 + Math.random() * 0.04, playAt);
 
   const gain = ctx.createGain();
-
-  // Look up the note in your mixing board. If not found, use a safe default (like 0.5)
-  const offset = (DRUM_GAIN_OFFSETS[midiNote] !== undefined) ? DRUM_GAIN_OFFSETS[midiNote] : 0.5;
-
-  gain.gain.value = (velocity / 127) * offset * (window.DRUM_MASTER_VOL || 1.0);
   
+  // 1. Get the instrument-specific offset (Kick vs Hat)
+  const offset = (DRUM_GAIN_OFFSETS[midiNote] !== undefined) ? DRUM_GAIN_OFFSETS[midiNote] : 0.5;
+  
+  // 2. Get the kit-specific multiplier (909 vs MRK-2)
+  const kitBoost = KIT_MASTER_GAINS[activeDrumKitId] || 1.0;
+
+  // 3. Multiply it all together
+  gain.gain.value = (velocity / 127) * offset * kitBoost * (window.DRUM_MASTER_VOL || 1.0);
+
   src.connect(gain);
   gain.connect(drumGainNode);
-  src.start(ctx.currentTime);
+  src.start(playAt);
 }
 
 // ─── INSTRUMENT STATE ─────────────────────────────────────────────────────────
@@ -1066,6 +1103,10 @@ const sustainedNotes = new Set();
 let arpOn = false, arpTimer = null, arpStep = 0;
 let arpHeld = new Map(), arpHeldOrder = 0, arpCurrentNote = null;
 const ARP_STEPS = 16;
+const ARP_LOOKAHEAD_S  = 0.1;   // schedule notes up to 100ms ahead
+const ARP_SCHEDULE_MS  = 25;    // re-run scheduler every 25ms
+let arpNextNoteTime    = 0;     // next note's target time on the audio clock
+let arpScheduledNotes  = [];    // [{note, offTime}] for tracking gate-offs
 
 // ─── COMPUTER KEYBOARD ────────────────────────────────────────────────────────
 let computerOctave = 4;
@@ -1429,43 +1470,142 @@ function arpBuildSeq() {
   return seq;
 }
 
-function arpTick() {
+function arpScheduleNote(targetTime) {
   if (!ctx) return;
   const seq = arpBuildSeq();
-  if (!seq.length) { arpSilence(); return; }
-  arpSilence();
+  if (!seq.length) return;
+
   const stepIdx = arpStep % ARP_STEPS;
-  document.querySelectorAll('.arp-step-dot').forEach(d => d.classList.remove('active'));
-  const dot = document.getElementById('arp-dot-' + stepIdx);
-  if (dot) dot.classList.add('active');
-  const note = seq[arpStep % seq.length];
-  const gate = parseFloat(document.getElementById('arp-gate').value);
-  arpCurrentNote = note;
-  noteOn(note, 90);
-  setTimeout(() => { if (arpCurrentNote === note) noteOff(note); }, arpGetBeatMs() * gate);
+  const note    = seq[arpStep % seq.length];
+  const gate    = parseFloat(document.getElementById('arp-gate').value);
+  const beatS   = arpGetBeatMs() / 1000;
+  const offTime = targetTime + beatS * gate;
+
+  // Light up the step dot at approximately the right wall-clock moment
+  const msUntil = (targetTime - ctx.currentTime) * 1000;
+  setTimeout(() => {
+    if (!arpOn) return;
+    document.querySelectorAll('.arp-step-dot').forEach(d => d.classList.remove('active'));
+    const dot = document.getElementById('arp-dot-' + stepIdx);
+    if (dot) dot.classList.add('active');
+  }, Math.max(0, msUntil));
+
+  // Schedule note-on at precise audio-clock time
+  noteOnAtTime(note, 90, targetTime);
+
+  // Schedule note-off at precise audio-clock time
+  noteOffAtTime(note, offTime);
+
+  arpScheduledNotes.push({ note, offTime });
   arpStep++;
 }
 
-function arpSilence() {
-  if (arpCurrentNote === null) return;
-  const note = arpCurrentNote;
-  arpCurrentNote = null;
-  if (pianoMode) {
-    if (sfActive.has(note)) { try { sfActive.get(note).stop(ctx.currentTime+0.05); } catch(e) {} sfActive.delete(note); highlightKey(note,false); updatePolyCount(); }
-  } else {
-    if (activeNotes.has(note)) {
-      const {osc,gain} = activeNotes.get(note);
-      const now = ctx.currentTime;
-      gain.gain.cancelScheduledValues(now); gain.gain.setValueAtTime(gain.gain.value,now);
-      gain.gain.linearRampToValueAtTime(0,now+0.05);
-      try { osc.stop(now+0.1); } catch(e) {}
-      activeNotes.delete(note); highlightKey(note,false); updatePolyCount();
+function arpScheduler() {
+  if (!ctx || !arpOn) return;
+  // Purge notes whose off-time has passed
+  const now = ctx.currentTime;
+  arpScheduledNotes = arpScheduledNotes.filter(n => n.offTime > now);
+
+  const seq = arpBuildSeq();
+  if (seq.length) {
+    while (arpNextNoteTime < now + ARP_LOOKAHEAD_S) {
+      arpScheduleNote(arpNextNoteTime);
+      arpNextNoteTime += arpGetBeatMs() / 1000;
     }
   }
+  arpTimer = setTimeout(arpScheduler, ARP_SCHEDULE_MS);
 }
 
-function arpStart() { clearInterval(arpTimer); arpStep=0; arpTimer=setInterval(arpTick,arpGetBeatMs()); }
-function arpStop()  { clearInterval(arpTimer); arpTimer=null; arpSilence(); document.querySelectorAll('.arp-step-dot').forEach(d=>d.classList.remove('active')); }
+function arpSilenceAll() {
+  arpScheduledNotes.forEach(({ note, offTime }) => {
+    if (pianoMode) {
+      if (sfActive.has(note)) { try { sfActive.get(note).stop(ctx.currentTime + 0.02); } catch(e) {} sfActive.delete(note); highlightKey(note, false); }
+    } else {
+      if (activeNotes.has(note)) {
+        const { osc, gain } = activeNotes.get(note);
+        const now = ctx.currentTime;
+        gain.gain.cancelScheduledValues(now); gain.gain.setValueAtTime(gain.gain.value, now);
+        gain.gain.linearRampToValueAtTime(0, now + 0.05);
+        try { osc.stop(now + 0.06); } catch(e) {}
+        activeNotes.delete(note); highlightKey(note, false);
+      }
+    }
+  });
+  arpScheduledNotes = [];
+  arpCurrentNote = null;
+  updatePolyCount();
+}
+
+function arpStart() {
+  clearTimeout(arpTimer);
+  arpTimer = null;
+  arpStep = 0;
+  arpScheduledNotes = [];
+  arpNextNoteTime = ctx ? ctx.currentTime : 0;
+  arpScheduler();
+}
+
+function arpStop() {
+  clearTimeout(arpTimer);
+  arpTimer = null;
+  arpSilenceAll();
+  document.querySelectorAll('.arp-step-dot').forEach(d => d.classList.remove('active'));
+}
+
+// ─── NOTE ON/OFF AT PRECISE AUDIO TIME (for arpeggiator) ─────────────────────
+function noteOnAtTime(note, velocity, time) {
+  if (!ctx) return;
+  if (pianoMode) {
+    if (!sfInstr) return;
+    if (sfActive.has(note)) { try { sfActive.get(note).stop(time); } catch(e) {} sfActive.delete(note); }
+    const node = sfInstr.play(note, time, { gain: (velocity / 127) * sfGain, duration: 60 });
+    sfActive.set(note, node);
+    const msUntil = (time - ctx.currentTime) * 1000;
+    setTimeout(() => { updateUI(note, midiToFreq(note), velocity); highlightKey(note, true); updatePolyCount(); }, Math.max(0, msUntil));
+    return;
+  }
+  if (activeNotes.has(note)) noteOffAtTime(note, time);
+  if (activeNotes.size >= MAX_POLY) {
+    const oldest = activeNotes.keys().next().value;
+    noteOffAtTime(oldest, time);
+  }
+  const freq = midiToFreq(note), vel = velocity / 127;
+  const osc  = ctx.createOscillator(); osc.type = waveType; osc.frequency.value = freq;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0, time);
+  gain.gain.linearRampToValueAtTime(vel, time + env.a);
+  gain.gain.linearRampToValueAtTime(vel * env.s, time + env.a + env.d);
+  let chain = gain;
+  if (distActive)   { chain.connect(distNode);    chain = distNode; }
+  if (chorusActive) { chain.connect(chorusDelay); chain = chorusDelay; }
+  if (reverbActive) { chain.connect(reverbNode);  reverbNode.connect(oscGainNode); }
+  chain.connect(oscGainNode);
+  oscGainNode.connect(filterNode);
+  osc.connect(gain); osc.start(time);
+  activeNotes.set(note, { osc, gain, freq, velocity });
+  const msUntil = (time - ctx.currentTime) * 1000;
+  setTimeout(() => { updateUI(note, freq, velocity); highlightKey(note, true); updatePolyCount(); }, Math.max(0, msUntil));
+}
+
+function noteOffAtTime(note, time) {
+  if (!ctx) return;
+  if (pianoMode) {
+    if (!sfActive.has(note)) return;
+    const rel = getReleaseTime() !== null ? getReleaseTime() : 0.15;
+    try { sfActive.get(note).stop(time + rel); } catch(e) {}
+    sfActive.delete(note);
+    setTimeout(() => { highlightKey(note, false); updatePolyCount(); if (sfActive.size === 0) clearDisplay(); }, Math.max(0, (time - ctx.currentTime) * 1000));
+    return;
+  }
+  if (!activeNotes.has(note)) return;
+  const { osc, gain } = activeNotes.get(note);
+  gain.gain.cancelScheduledValues(time);
+  gain.gain.setValueAtTime(gain.gain.value, time);
+  gain.gain.linearRampToValueAtTime(0, time + env.r);
+  try { osc.stop(time + env.r + 0.05); } catch(e) {}
+  activeNotes.delete(note);
+  setTimeout(() => { highlightKey(note, false); updatePolyCount(); if (activeNotes.size === 0) clearDisplay(); }, Math.max(0, (time - ctx.currentTime) * 1000));
+}
 
 // ─── CHORDS ───────────────────────────────────────────────────────────────────
 const CHORD_INTERVALS = {
@@ -1780,13 +1920,16 @@ document.getElementById('fx-dist').addEventListener('click',function(){distActiv
 document.getElementById('arp-power').addEventListener('click',function(){
   arpOn=!arpOn; this.classList.toggle('active',arpOn);
   this.textContent=arpOn?'⬡ ARP ON':'⬡ ARP OFF';
-  if(arpOn) arpStart(); else {arpStop();arpHeld.clear();}
+  if(arpOn){ initAudio(); if(ctx.state==='suspended') ctx.resume(); arpStart(); }
+  else { arpStop(); arpHeld.clear(); }
 });
 document.getElementById('arp-bpm').addEventListener('input',e=>{
   document.getElementById('arp-bpm-val').textContent=e.target.value;
-  if(arpOn){arpStop();arpStart();}
+  if(arpOn){ clearTimeout(arpTimer); arpTimer=null; arpNextNoteTime=ctx?ctx.currentTime:0; arpScheduler(); }
 });
-document.getElementById('arp-div').addEventListener('change',()=>{if(arpOn){arpStop();arpStart();}});
+document.getElementById('arp-div').addEventListener('change',()=>{
+  if(arpOn){ clearTimeout(arpTimer); arpTimer=null; arpNextNoteTime=ctx?ctx.currentTime:0; arpScheduler(); }
+});
 document.getElementById('arp-pattern').addEventListener('change',()=>{arpStep=0;});
 
 document.getElementById('start-overlay').addEventListener('click',()=>{
@@ -1971,6 +2114,23 @@ function openTrackInstrPicker(trackIdx) {
   const catWrap = document.createElement('div');
   catWrap.style.cssText = 'display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;flex-wrap:wrap;margin-bottom:8px;';
   let firstBtn = null;
+
+  // Special options: DRUM KIT and OSCILLATOR
+  [
+    { label: 'DRUM KIT',   special: '__drums__'    },
+    { label: 'OSCILLATOR', special: '__oscillator__' },
+  ].forEach(({ label, special }) => {
+    const btn = document.createElement('button');
+    btn.className = 'cat-btn';
+    btn.textContent = label;
+    btn.addEventListener('click', () => {
+      pickerOverlay.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderPickerSpecial(special);
+    });
+    catWrap.appendChild(btn);
+  });
+
   Object.keys(INSTRUMENT_DB).forEach(cat => {
     if (cat === 'OSCILLATOR') return;
     const btn = document.createElement('button');
@@ -1995,6 +2155,86 @@ function openTrackInstrPicker(trackIdx) {
   if (firstBtn) { firstBtn.classList.add('active'); renderPickerGrid(firstBtn.textContent); }
 }
 
+function renderPickerSpecial(special) {
+  const grid = document.getElementById('track-picker-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+
+  const isDrums = special === '__drums__';
+
+  if (isDrums) {
+    // Show all available kits as selectable options
+    const label = document.createElement('div');
+    label.style.cssText = 'grid-column:span 3;font-size:0.55rem;color:var(--dim);letter-spacing:0.12em;margin-bottom:6px;';
+    label.textContent = 'SELECT KIT';
+    grid.appendChild(label);
+
+    DRUM_KIT_REGISTRY.forEach(kit => {
+      const btn = document.createElement('button');
+      btn.className = 'instr-btn' + (kit.id === activeDrumKitId ? ' active' : '');
+      btn.innerHTML = kit.emoji + ' ' + kit.label;
+      btn.addEventListener('click', async () => {
+        const track = midiTracks[pickerTargetTrack];
+        track.instrId    = '__drums__';
+        track.instrLabel = kit.emoji + ' ' + kit.label;
+        track.sfInstr    = null;
+        track.drumKitId  = kit.id;
+        const el = document.getElementById('track-instr-' + pickerTargetTrack);
+        if (el) el.textContent = track.instrLabel;
+        initAudio();
+        if (!kitBufferCache[kit.id]) {
+          const statusEl = document.getElementById('drum-kit-status');
+          await switchDrumKit(kit.id, statusEl);
+        } else {
+          activeDrumKitId = kit.id;
+          updateDrumKitUI();
+        }
+        pickerOverlay.remove(); pickerOverlay = null;
+      });
+      grid.appendChild(btn);
+    });
+    return;
+  }
+
+  // Oscillator
+  const btn = document.createElement('button');
+  btn.className = 'instr-btn active';
+  btn.textContent = '〜 OSCILLATOR';
+  btn.style.gridColumn = 'span 3';
+  btn.addEventListener('click', async () => {
+    const track = midiTracks[pickerTargetTrack];
+    track.instrId    = '__oscillator__';
+    track.instrLabel = 'OSCILLATOR';
+    track.sfInstr    = null;
+    const el = document.getElementById('track-instr-' + pickerTargetTrack);
+    if (el) el.textContent = track.instrLabel;
+    pickerOverlay.remove(); pickerOverlay = null;
+  });
+  grid.appendChild(btn);
+
+  // Waveform selector
+  const waveLabel = document.createElement('div');
+  waveLabel.style.cssText = 'grid-column:span 3;font-size:0.55rem;color:var(--dim);letter-spacing:0.12em;margin-top:8px;margin-bottom:4px;';
+  waveLabel.textContent = 'WAVEFORM';
+  grid.appendChild(waveLabel);
+  ['sine','square','sawtooth','triangle'].forEach(w => {
+    const wb = document.createElement('button');
+    wb.className = 'instr-btn';
+    wb.textContent = w.toUpperCase();
+    wb.addEventListener('click', async () => {
+      const track = midiTracks[pickerTargetTrack];
+      track.instrId    = '__oscillator__';
+      track.instrLabel = 'OSC: ' + w.toUpperCase();
+      track.sfInstr    = null;
+      track.oscWave    = w;
+      const el = document.getElementById('track-instr-' + pickerTargetTrack);
+      if (el) el.textContent = track.instrLabel;
+      pickerOverlay.remove(); pickerOverlay = null;
+    });
+    grid.appendChild(wb);
+  });
+}
+
 function renderPickerGrid(cat) {
   const grid = document.getElementById('track-picker-grid');
   if (!grid) return;
@@ -2007,6 +2247,7 @@ function renderPickerGrid(cat) {
       const track = midiTracks[pickerTargetTrack];
       track.instrId    = instr.id;
       track.instrLabel = instr.label;
+      track.oscWave    = null;
       const el = document.getElementById('track-instr-' + pickerTargetTrack);
       if (el) el.textContent = instr.label;
       if (!sfCache[instr.id]) {
@@ -2028,12 +2269,12 @@ function renderPickerGrid(cat) {
 async function loadAllTrackInstruments() {
   initAudio();
   const melodicToLoad = [...new Set(midiTracks.map(t => t.instrId))]
-    .filter(id => id !== '__drums__' && !sfCache[id]);
+    .filter(id => id !== '__drums__' && id !== '__oscillator__' && !sfCache[id]);
   const needsDrums = midiTracks.some(t => t.instrId === '__drums__') && !drumsLoaded;
   const totalJobs = melodicToLoad.length + (needsDrums ? 1 : 0);
 
   if (!totalJobs) {
-    midiTracks.forEach(t => { t.sfInstr = t.instrId === '__drums__' ? null : (sfCache[t.instrId] || null); });
+    midiTracks.forEach(t => { t.sfInstr = (t.instrId === '__drums__' || t.instrId === '__oscillator__') ? null : (sfCache[t.instrId] || null); });
     document.getElementById('midi-play').disabled = false;
     return;
   }
@@ -2065,7 +2306,7 @@ async function loadAllTrackInstruments() {
     updateStatus();
   }
 
-  midiTracks.forEach(t => { t.sfInstr = t.instrId === '__drums__' ? null : (sfCache[t.instrId] || null); });
+  midiTracks.forEach(t => { t.sfInstr = (t.instrId === '__drums__' || t.instrId === '__oscillator__') ? null : (sfCache[t.instrId] || null); });
   statusEl.textContent = '✓ ALL INSTRUMENTS READY';
   setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
   document.getElementById('midi-play').disabled = false;
@@ -2191,7 +2432,7 @@ function midiSchedule() {
   midiData.tracks.forEach((rawTrack, rawIdx) => {
     const track = midiTracks.find(t => t.index === rawIdx);
     if (!track) return;
-    if (!track.sfInstr && track.instrId !== '__drums__') return;
+    if (!track.sfInstr && track.instrId !== '__drums__' && track.instrId !== '__oscillator__') return;
 
     rawTrack.notes.forEach(note => {
       const absStart = note.time * tempoScale;
@@ -2201,20 +2442,50 @@ function midiSchedule() {
       const delay = (absStart - midiPosition * tempoScale) * 1000;
       if (delay < -50) return; // already past
 
+// Calculate the exact time in the FUTURE the audio clock should hit this note
+const targetTime = ctx.currentTime + (delay / 1000);
+
       const onTimer = setTimeout(() => {
         if (!midiPlaying) return;
         const shouldPlay = anySoloed ? track.soloed : !track.muted;
         if (!shouldPlay) return;
         try {
           if (track.instrId === '__drums__') {
-            playDrumNote(note.midi, Math.round(note.velocity * 127));
+            const kitId = track.drumKitId || activeDrumKitId;
+            const savedKit = activeDrumKitId;
+            activeDrumKitId = kitId;
+            playDrumNote(note.midi, Math.round(note.velocity * 127), targetTime);
+            activeDrumKitId = savedKit;
+            highlightKey(note.midi, true);
+          } else if (track.instrId === '__oscillator__') {
+            // Oscillator track: create a scheduled OSC node
+            const freq = midiToFreq(note.midi);
+            const vel  = note.velocity;
+            const osc  = ctx.createOscillator();
+            osc.type   = track.oscWave || waveType;
+            osc.frequency.value = freq;
+            const gain = ctx.createGain();
+            gain.gain.setValueAtTime(0, targetTime);
+            gain.gain.linearRampToValueAtTime(vel * env.s * midiVolume, targetTime + env.a);
+            gain.gain.linearRampToValueAtTime(vel * env.s * midiVolume * 0.8, targetTime + env.a + env.d);
+            gain.gain.setValueAtTime(vel * env.s * midiVolume * 0.8, targetTime + absDur - env.r);
+            gain.gain.linearRampToValueAtTime(0, targetTime + absDur);
+            gain.connect(oscGainNode);
+            osc.connect(gain);
+            osc.start(targetTime);
+            osc.stop(targetTime + absDur + 0.05);
+            if (track.noteActive.has(note.midi)) {
+              try { track.noteActive.get(note.midi).stop(targetTime); } catch(e) {}
+            }
+            track.noteActive.set(note.midi, osc);
             highlightKey(note.midi, true);
           } else if (track.sfInstr) {
             if (track.noteActive.has(note.midi)) {
               try { track.noteActive.get(note.midi).stop(); } catch(e) {}
             }
-            const node = track.sfInstr.play(note.midi, ctx.currentTime, {
-              gain: note.velocity * midiVolume, duration: absDur + 1,
+            const node = track.sfInstr.play(note.midi, targetTime, {
+              gain: note.velocity * midiVolume, 
+              duration: absDur + 1,
             });
             track.noteActive.set(note.midi, node);
             highlightKey(note.midi, true);
@@ -2226,7 +2497,7 @@ function midiSchedule() {
         if (!midiPlaying) return;
         try {
           if (track.instrId !== '__drums__' && track.noteActive.has(note.midi)) {
-            try { track.noteActive.get(note.midi).stop(ctx.currentTime + 0.05); } catch(e) {}
+            try { track.noteActive.get(note.midi).stop(targetTime + absDur); } catch(e) {}
             track.noteActive.delete(note.midi);
           }
           highlightKey(note.midi, false);
@@ -2277,8 +2548,41 @@ function midiStopPlayback() {
 }
 
 
+// ─── DRUM KIT UI ──────────────────────────────────────────────────────────────
+function buildDrumKitUI() {
+  const wrap = document.getElementById('drum-kit-btns');
+  const statusEl = document.getElementById('drum-kit-status');
+  wrap.innerHTML = '';
+
+  DRUM_KIT_REGISTRY.forEach(kit => {
+    const btn = document.createElement('button');
+    btn.className = 'drum-kit-btn' + (kit.id === activeDrumKitId ? ' active' : '');
+    btn.dataset.kitId = kit.id;
+    btn.innerHTML = `<span class="kit-emoji">${kit.emoji}</span>${kit.label}`;
+    btn.addEventListener('click', async () => {
+      if (parseInt(btn.dataset.kitId) === activeDrumKitId && kitBufferCache[activeDrumKitId]) return;
+      initAudio();
+      if (ctx.state === 'suspended') ctx.resume();
+      // Mark as loading
+      document.querySelectorAll('.drum-kit-btn').forEach(b => b.classList.remove('active', 'loading'));
+      btn.classList.add('loading');
+      await switchDrumKit(kit.id, statusEl);
+      btn.classList.remove('loading');
+    });
+    wrap.appendChild(btn);
+  });
+}
+
+document.getElementById('drum-vol').addEventListener('input', e => {
+  const v = parseFloat(e.target.value);
+  window.DRUM_MASTER_VOL = v;
+  document.getElementById('drum-vol-val').textContent = Math.round(v * 100) + '%';
+  if (drumGainNode) drumGainNode.gain.value = v * 1.7; // scale to useful range
+});
+
 buildPicker();
 buildChordButtons();
+buildDrumKitUI();
 window.addEventListener('load', initMIDI);
 </script>
 </body>
