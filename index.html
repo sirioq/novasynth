@@ -1981,6 +1981,65 @@ function gmToInstrId(programNum, channel) {
   return GM_TO_INSTR[idx] || 'acoustic_grand_piano';
 }
 
+// ── Drum kit auto-detection ───────────────────────────────────────────────────
+// MIDI files select a drum kit via Program Change on channel 10 (GM index 9).
+// The @tonejs/midi library returns program numbers 1-based (1-128), matching
+// how DAWs and hardware display them. Kit IDs below match DRUM_KIT_REGISTRY ids.
+// GM standard program numbers for drums (1-based):
+//   1        Standard Kit
+//   9        Room Kit
+//   17       Power Kit
+//   25       Electronic Kit
+//   26       Analog (TR-808/909 style)
+//   33       Jazz Kit
+//   41       Brush Kit
+//   49       Orchestral Kit
+//   57       SFX Kit
+// Bank Select MSB (CC0) can indicate GS/GM2/XG variation kits.
+// We match these to the nearest kit in DRUM_KIT_REGISTRY.
+const GM_DRUM_KIT_MAP = [
+  // [programMin, programMax, kitId]  -- first match wins, programs are 1-based
+  [25, 25, 25],   // Electronic  -> ELECTRO (CR-78)
+  [26, 26, 26],   // Analog/808  -> DETROIT (909-style)
+  [17, 24, 26],   // Power Kit   -> DETROIT (punchy)
+  [33, 40, 1],    // Jazz Kit    -> ACOUSTIC
+  [41, 48, 1],    // Brush Kit   -> ACOUSTIC
+  [49, 56, 1],    // Orchestral  -> ACOUSTIC
+  [57, 64, 35],   // SFX Kit     -> 80s (LinnDrum)
+  [9,  16, 1],    // Room Kit    -> ACOUSTIC
+  [1,   8, 1],    // Standard    -> ACOUSTIC (default)
+];
+
+function gmProgramToKitId(programNum) {
+  const p = programNum || 0;
+  for (const [min, max, kitId] of GM_DRUM_KIT_MAP) {
+    if (p >= min && p <= max) {
+      if (DRUM_KIT_REGISTRY.some(k => k.id === kitId)) return kitId;
+    }
+  }
+  return DRUM_KIT_REGISTRY[0].id;
+}
+
+// Extract bank select MSB from a track's control changes (CC 0)
+function getTrackBankMSB(rawTrack) {
+  const cc = rawTrack.controlChanges;
+  if (!cc || !cc[0] || !cc[0].length) return 0;
+  return cc[0][0].value || 0;
+}
+
+// Return the best matching kit id for a drum track.
+function detectDrumKitId(rawTrack) {
+  const programNum = rawTrack.instrument ? rawTrack.instrument.number : 0;
+  const bankMSB    = getTrackBankMSB(rawTrack);
+
+  // GS bank 1, program 33-40 = Latin/ethnic variation -> LATIN kit if available
+  if (bankMSB >= 1 && programNum >= 33 && programNum <= 40) {
+    if (DRUM_KIT_REGISTRY.some(k => k.id === 33)) return 33;
+  }
+
+  return gmProgramToKitId(programNum);
+}
+
 function instrIdToLabel(id) {
   if (id === '__drums__') return 'DRUM KIT';
   for (const items of Object.values(INSTRUMENT_DB)) {
@@ -2029,11 +2088,20 @@ function buildTrackList() {
     const programNum = track.instrument ? track.instrument.number : 0;
     const channel    = track.channel !== undefined ? track.channel : i;
     const instrId    = gmToInstrId(programNum, channel);
+
+    // For drum tracks, detect the best matching kit from the MIDI file's program/bank data
+    const drumKitId  = (instrId === '__drums__') ? detectDrumKitId(track) : null;
+    const kitInfo    = drumKitId ? DRUM_KIT_REGISTRY.find(k => k.id === drumKitId) : null;
+    const instrLabel = drumKitId
+      ? ('DRUM KIT' + (kitInfo ? ' · ' + kitInfo.label : ''))
+      : instrIdToLabel(instrId);
+
     midiTracks.push({
       index:      i,
       name:       track.name || ('TRACK ' + (i+1)),
       instrId,
-      instrLabel: instrIdToLabel(instrId),
+      instrLabel,
+      drumKitId,
       muted:      false,
       soloed:     false,
       sfInstr:    sfCache[instrId] || null,
@@ -2283,12 +2351,26 @@ async function loadAllTrackInstruments() {
   initAudio();
   const melodicToLoad = [...new Set(midiTracks.map(t => t.instrId))]
     .filter(id => id !== '__drums__' && id !== '__oscillator__' && !sfCache[id]);
-  const needsDrums = midiTracks.some(t => t.instrId === '__drums__') && !drumsLoaded;
-  const totalJobs = melodicToLoad.length + (needsDrums ? 1 : 0);
+
+  // Collect every unique drum kit the MIDI file needs
+  const drumKitIds = [...new Set(
+    midiTracks.filter(t => t.instrId === '__drums__' && t.drumKitId != null)
+              .map(t => t.drumKitId)
+  )].filter(id => !kitBufferCache[id]);
+
+  // If there are drum tracks but none have a detected kit, fall back to loading the active kit
+  const hasDrumTracks = midiTracks.some(t => t.instrId === '__drums__');
+  if (hasDrumTracks && drumKitIds.length === 0 && !drumsLoaded) {
+    drumKitIds.push(activeDrumKitId);
+  }
+
+  const totalJobs = melodicToLoad.length + drumKitIds.length;
 
   if (!totalJobs) {
     midiTracks.forEach(t => { t.sfInstr = (t.instrId === '__drums__' || t.instrId === '__oscillator__') ? null : (sfCache[t.instrId] || null); });
     document.getElementById('midi-play').disabled = false;
+    // Even if already cached, sync the active kit to what the first drum track wants
+    syncActiveDrumKit();
     return;
   }
 
@@ -2312,36 +2394,40 @@ async function loadAllTrackInstruments() {
     updateStatus();
   }));
 
-  // Load drum kit via nbrosowsky samples
-  if (needsDrums) {
-    statusEl.textContent = 'LOADING DRUM KIT…';
-    try { await loadDrumKit(); } catch(e) { console.error('Drums failed:', e); }
+  // Load each required drum kit (sequentially to avoid hammering GitHub)
+  for (const kitId of drumKitIds) {
+    statusEl.textContent = 'LOADING DRUM KIT ' + (DRUM_KIT_REGISTRY.find(k => k.id === kitId)?.label || kitId) + '…';
+    try { await loadDrumKit(kitId); } catch(e) { console.error('Drums failed:', e); }
     updateStatus();
   }
 
   midiTracks.forEach(t => { t.sfInstr = (t.instrId === '__drums__' || t.instrId === '__oscillator__') ? null : (sfCache[t.instrId] || null); });
+
+  // Set the global active kit to what the first drum track in this file needs
+  syncActiveDrumKit();
+
   statusEl.textContent = '✓ ALL INSTRUMENTS READY';
   setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
   document.getElementById('midi-play').disabled = false;
+}
+
+// Set activeDrumKitId to the first drum track's detected kit and refresh the kit UI.
+// Always updates the UI so the selector reflects the loaded file even when the
+// detected kit happens to match the current activeDrumKitId (e.g. first load).
+function syncActiveDrumKit() {
+  const firstDrumTrack = midiTracks.find(t => t.instrId === '__drums__' && t.drumKitId != null);
+  if (firstDrumTrack) {
+    activeDrumKitId = firstDrumTrack.drumKitId;
+    updateDrumKitUI();
+  }
 }
 
 // ── Scrub bar ─────────────────────────────────────────────────────────────────
 function updateScrubBar(pct) {
   const bar  = document.getElementById('midi-progress');
   const head = document.getElementById('midi-scrub-head');
-  if (bar)  bar.style.width = pct + '%';
-  if (head) head.style.left = pct + '%';
-}
-
-function scrubTo(pct) {
-  midiPosition = (pct / 100) * midiDuration;
-  updateScrubBar(pct);
-  if (midiPlaying) {
-    midiStopTimers();
-    midiStartTime = ctx.currentTime;
-    midiBuildQueue();
-    midiStartScheduler();
-  }
+  if (bar)  bar.style.width  = pct + '%';
+  if (head) head.style.left  = pct + '%';
 }
 
 function getScrubPct(e, el) {
@@ -2368,8 +2454,8 @@ function getScrubPct(e, el) {
   function onUp() { dragging = false; }
   wrap.addEventListener('mousedown',  onDown);
   wrap.addEventListener('touchstart', onDown, {passive:false});
-  document.addEventListener('mousemove',  onMove);
-  document.addEventListener('touchmove',  onMove, {passive:false});
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('touchmove', onMove, {passive:false});
   document.addEventListener('mouseup',  onUp);
   document.addEventListener('touchend', onUp);
 })();
@@ -2378,17 +2464,17 @@ function getScrubPct(e, el) {
 document.getElementById('midi-play').addEventListener('click', () => {
   if (!midiData) return;
   if (midiPlaying) {
-    // Pause — record how far through the file we got
+    // Pause: snapshot how far through the file we are in raw file-seconds
     midiPosition += (ctx.currentTime - midiStartTime) / midiTempoScale;
-    midiStopTimers();
     midiPlaying = false;
     midiPaused  = true;
+    midiStopTimers();
     const pb = document.getElementById('midi-play');
     pb.textContent = '▶ PLAY';
     pb.classList.remove('active');
   } else {
-    // Play / resume
-    midiStartPlayback();
+    // Play / resume from midiPosition
+    midiBeginFrom(midiPosition);
   }
 });
 
@@ -2398,29 +2484,35 @@ document.getElementById('midi-stop').addEventListener('click', () => {
   updateScrubBar(0);
 });
 
+// scrubTo: jump to any position whether playing or paused.
+// During a drag this fires on every mousemove, so it must be cheap and clean.
+function scrubTo(pct) {
+  const newPos = (pct / 100) * midiDuration;
+  updateScrubBar(pct);
+  if (!midiPlaying) {
+    // Just update the position; play will pick it up when resumed
+    midiPosition = newPos;
+    return;
+  }
+  // Playing: restart from the new position without changing midiPlaying
+  midiStopTimers();               // kills scheduler, clears queue, stops active notes
+  midiPosition = newPos;
+  midiBeginFrom(midiPosition);    // re-anchors midiStartTime and relaunches scheduler
+}
+
 function setMidiTempo(pct) {
   if (midiPlaying) {
-    // Capture old tempo scale BEFORE updating the slider value
-    const oldTempoScale = 100 / parseInt(document.getElementById('midi-tempo').value);
-    const realElapsed = ctx.currentTime - midiStartTime;
-    midiPosition += realElapsed / oldTempoScale;
-    midiStartTime = ctx.currentTime;
-    document.getElementById('midi-tempo').value = pct;
-    ['50','75','100'].forEach(v => {
-      const btn = document.getElementById('tempo-' + v);
-      if (btn) btn.classList.toggle('active', parseInt(v) === pct);
-    });
-    midiTempoScale = 100 / pct;
+    // Save position in file-seconds at the old tempo before changing scale
+    midiPosition += (ctx.currentTime - midiStartTime) / midiTempoScale;
     midiStopTimers();
-    midiBuildQueue();
-    midiStartScheduler();
-  } else {
-    document.getElementById('midi-tempo').value = pct;
-    ['50','75','100'].forEach(v => {
-      const btn = document.getElementById('tempo-' + v);
-      if (btn) btn.classList.toggle('active', parseInt(v) === pct);
-    });
+    midiTempoScale = 100 / pct;
+    midiBeginFrom(midiPosition);
   }
+  document.getElementById('midi-tempo').value = pct;
+  ['50','75','100'].forEach(v => {
+    const btn = document.getElementById('tempo-' + v);
+    if (btn) btn.classList.toggle('active', parseInt(v) === pct);
+  });
 }
 
 document.getElementById('midi-vol').addEventListener('input', e => {
@@ -2430,26 +2522,56 @@ document.getElementById('midi-vol').addEventListener('input', e => {
 
 // ── Scheduling ────────────────────────────────────────────────────────────────
 
-function midiStartPlayback() {
+// Single entry point for starting / restarting playback from a given raw file position.
+// All of play, resume, scrub-while-playing, and tempo-change funnel through here.
+//
+// Time model (must be consistent everywhere):
+//   midiPosition   = file cursor in raw file-seconds (as @tonejs/midi reports note.time)
+//   midiStartTime  = ctx.currentTime at which midiPosition was the playhead
+//   midiTempoScale = real-seconds per file-second  (= 100 / tempoPercent)
+//                    100% -> 1.0,  50% -> 2.0,  75% -> 1.33...
+//
+// Converting file-seconds to audio-clock time:
+//   audioTime = midiStartTime + (fileSeconds - midiPosition) * midiTempoScale
+//
+// Converting elapsed audio time back to file position:
+//   filePos = midiPosition + (ctx.currentTime - midiStartTime) / midiTempoScale
+
+function midiBeginFrom(filePos) {
   if (!midiData || !midiTracks.length) return;
   initAudio();
   if (ctx.state === 'suspended') ctx.resume();
-  midiPlaying      = true;
-  midiPaused       = false;
-  midiStartTime    = ctx.currentTime;
-  midiTempoScale   = 100 / parseInt(document.getElementById('midi-tempo').value);
+
+  // Clamp to valid range
+  midiPosition  = Math.max(0, Math.min(midiDuration, filePos));
+
+  // Read tempo from DOM only if it hasn't been set by setMidiTempo
+  // (midiTempoScale is initialised to 1.0 and updated by setMidiTempo)
+  midiTempoScale = 100 / parseInt(document.getElementById('midi-tempo').value);
+
+  // Anchor the audio clock to the new position
+  midiStartTime = ctx.currentTime;
+
+  midiPlaying = true;
+  midiPaused  = false;
+
   midiBuildQueue();
   midiStartScheduler();
+
   const pb = document.getElementById('midi-play');
   pb.textContent = '⏸ PAUSE';
   pb.classList.add('active');
 }
 
-// Build a flat, time-sorted array of every note event across all tracks.
-// Each entry carries everything the scheduler needs so it touches no globals mid-tick.
+// Keep the old name so any other callers still work
+function midiStartPlayback() {
+  midiBeginFrom(midiPosition);
+}
+
+// Build a flat, time-sorted array of every upcoming note event.
+// Stores raw file times so the scheduler can apply tempo scaling at fire-time.
 function midiBuildQueue() {
   midiNoteQueue = [];
-  const ts = midiTempoScale;
 
   midiData.tracks.forEach((rawTrack, rawIdx) => {
     const track = midiTracks.find(t => t.index === rawIdx);
@@ -2457,48 +2579,48 @@ function midiBuildQueue() {
     if (!track.sfInstr && track.instrId !== '__drums__' && track.instrId !== '__oscillator__') return;
 
     rawTrack.notes.forEach(note => {
-      const absStart = note.time * ts;           // seconds from file start
-      const absDur   = note.duration * ts;
-
-      // Skip notes that have entirely passed the current position
-      if (absStart + absDur < midiPosition * ts) return;
-
-      midiNoteQueue.push({ absStart, absDur, note, track });
+      // note.time and note.duration are raw file-seconds from @tonejs/midi
+      // Skip notes whose release has already passed the current position
+      if (note.time + note.duration < midiPosition) return;
+      midiNoteQueue.push({ rawStart: note.time, rawDur: note.duration, note, track });
     });
   });
 
-  // Sort ascending by start time so the scheduler can walk from the front
-  midiNoteQueue.sort((a, b) => a.absStart - b.absStart);
+  midiNoteQueue.sort((a, b) => a.rawStart - b.rawStart);
 }
 
-// The lookahead scheduler — runs every MIDI_SCHEDULER_MS and pre-schedules
-// any notes that fall within the next MIDI_LOOKAHEAD_S seconds on the audio clock.
+// Lookahead scheduler: wakes every MIDI_SCHEDULER_MS, looks MIDI_LOOKAHEAD_S
+// ahead on the audio clock, and pre-schedules any notes in that window.
 function midiSchedulerTick() {
   if (!midiPlaying) return;
 
-  // How far through the file are we right now, measured on the audio clock
-  const fileElapsed = midiPosition + (ctx.currentTime - midiStartTime) / midiTempoScale;
-  // The audio-clock horizon up to which we schedule
-  const horizon = fileElapsed + MIDI_LOOKAHEAD_S;
+  const ts = midiTempoScale;
 
-  while (midiNoteQueue.length > 0 && midiNoteQueue[0].absStart / midiTempoScale <= horizon) {
-    const ev = midiNoteQueue.shift();
-    const { absStart, absDur, note, track } = ev;
+  // Current file position in raw file-seconds
+  const fileCursor = midiPosition + (ctx.currentTime - midiStartTime) / ts;
 
-    // Absolute time on the audio clock when this note should sound
-    const playAt = midiStartTime + absStart / midiTempoScale;
-    // Guard: never schedule in the past (audio API would fire immediately, causing drift)
+  // How far ahead to look, converted from real seconds to file-seconds
+  const lookaheadInFileSecs = MIDI_LOOKAHEAD_S / ts;
+  const horizon = fileCursor + lookaheadInFileSecs;
+
+  while (midiNoteQueue.length > 0 && midiNoteQueue[0].rawStart <= horizon) {
+    const { rawStart, rawDur, note, track } = midiNoteQueue.shift();
+
+    // Convert file position to absolute audio-clock time
+    // audioTime = midiStartTime + (fileSeconds - midiPosition) * midiTempoScale
+    const playAt     = midiStartTime + (rawStart - midiPosition) * ts;
+    const durSec     = rawDur * ts;
     const safePlayAt = Math.max(ctx.currentTime + 0.001, playAt);
 
-    midiFireNote(track, note, absDur / midiTempoScale, safePlayAt);
+    midiFireNote(track, note, durSec, safePlayAt);
 
-    // Schedule the visual key-off using a plain setTimeout — cosmetic only
-    const offDelay = Math.max(0, (playAt - ctx.currentTime + absDur / midiTempoScale) * 1000);
+    // Visual key-off — cosmetic, JS-clock drift here is acceptable
+    const offDelay = Math.max(0, (safePlayAt - ctx.currentTime + durSec) * 1000);
     setTimeout(() => { highlightKey(note.midi, false); }, offDelay);
   }
 }
 
-// Fire a single note onto the audio clock at the given absolute audio time.
+// Schedule a single note onto the audio clock.
 function midiFireNote(track, note, durSec, playAt) {
   const shouldPlay = anySoloed ? track.soloed : !track.muted;
   if (!shouldPlay) return;
@@ -2549,28 +2671,27 @@ function midiFireNote(track, note, durSec, playAt) {
 }
 
 function midiStartScheduler() {
-  midiStopScheduler(); // clear any previous interval
+  midiStopScheduler();
 
-  // Run one tick immediately so the first notes are scheduled before the interval fires
+  // Fire immediately so notes at t=0 / right at the scrub point don't wait 25ms
   midiSchedulerTick();
-
   midiSchedulerInterval = setInterval(midiSchedulerTick, MIDI_SCHEDULER_MS);
 
-  // Progress bar (cosmetic — JS clock is fine here)
+  // Progress bar update (cosmetic — JS clock is fine)
   const progressInterval = setInterval(() => {
     if (!midiPlaying) { clearInterval(progressInterval); return; }
-    const elapsed = midiPosition + (ctx.currentTime - midiStartTime) / midiTempoScale;
-    updateScrubBar(Math.min(100, (elapsed / midiDuration) * 100));
+    const fileCursor = midiPosition + (ctx.currentTime - midiStartTime) / midiTempoScale;
+    updateScrubBar(Math.min(100, (fileCursor / midiDuration) * 100));
   }, 100);
   midiTimers.push(progressInterval);
 
-  // End-of-song timer — add generous padding so the last notes decay cleanly
-  const totalRemaining = (midiDuration - midiPosition) * midiTempoScale * 1000;
+  // End-of-song: remaining file-seconds * tempoScale = remaining real seconds
+  const remainingRealMs = (midiDuration - midiPosition) * midiTempoScale * 1000;
   const endTimer = setTimeout(() => {
     midiStopPlayback();
     midiPosition = 0;
     updateScrubBar(100);
-  }, totalRemaining + 1500);
+  }, remainingRealMs + 1500);
   midiTimers.push(endTimer);
 }
 
@@ -2620,11 +2741,20 @@ function buildDrumKitUI() {
       if (parseInt(btn.dataset.kitId) === activeDrumKitId && kitBufferCache[activeDrumKitId]) return;
       initAudio();
       if (ctx.state === 'suspended') ctx.resume();
-      // Mark as loading
       document.querySelectorAll('.drum-kit-btn').forEach(b => b.classList.remove('active', 'loading'));
       btn.classList.add('loading');
       await switchDrumKit(kit.id, statusEl);
       btn.classList.remove('loading');
+      // Override drumKitId on all drum tracks so the scheduler uses the new kit
+      midiTracks.forEach(t => { if (t.instrId === '__drums__') t.drumKitId = kit.id; });
+      // Update track list labels to reflect the manual override
+      midiTracks.forEach((t, ti) => {
+        if (t.instrId !== '__drums__') return;
+        const kitInfo = DRUM_KIT_REGISTRY.find(k => k.id === kit.id);
+        t.instrLabel = 'DRUM KIT' + (kitInfo ? ' · ' + kitInfo.label : '');
+        const el = document.getElementById('track-instr-' + ti);
+        if (el) el.textContent = t.instrLabel;
+      });
     });
     wrap.appendChild(btn);
   });
