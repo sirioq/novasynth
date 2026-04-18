@@ -1943,16 +1943,29 @@ document.getElementById('start-overlay').addEventListener('click',()=>{
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 
 // ─── MIDI FILE PLAYER ─────────────────────────────────────────────────────────
+
+// ─── TUNING CONSTANT ──────────────────────────────────────────────────────────
+// How far ahead (in seconds) notes are pre-scheduled onto the audio clock.
+// Increase if drums & instruments drift on mobile; decrease for snappier mute/solo response.
+// Good starting range: 0.05 (desktop) → 0.25 (slow mobile). Default: 0.15
+const MIDI_LOOKAHEAD_S = 0.15;
+// How often the scheduler wakes up (ms). Should be well under MIDI_LOOKAHEAD_S * 1000.
+const MIDI_SCHEDULER_MS = 25;
+// ──────────────────────────────────────────────────────────────────────────────
+
 let midiData        = null;
 let midiPlaying     = false;
 let midiPaused      = false;
-let midiTimers      = [];
-let midiStartTime   = 0;   // ctx.currentTime when playback started
-let midiPosition    = 0;   // seconds into the file (for pause/scrub)
+let midiTimers      = [];         // holds only the progress interval + end timer
+let midiStartTime   = 0;          // ctx.currentTime at the moment playback started
+let midiPosition    = 0;          // seconds into the file (for pause/scrub)
 let midiDuration    = 0;
-let midiTracks      = [];  // [{name,instrId,instrLabel,muted,soloed,sfInstr,channel,noteActive}]
+let midiTracks      = [];         // [{name,instrId,instrLabel,muted,soloed,sfInstr,channel,noteActive}]
 let midiVolume      = 1.0;
 let anySoloed       = false;
+let midiNoteQueue   = [];         // sorted array of all pending note events
+let midiSchedulerInterval = null; // the lookahead scheduler interval handle
+let midiTempoScale  = 1.0;        // cached so scheduler doesn't read DOM every tick
 
 function getMidiClass() {
   if (typeof Midi !== 'undefined' && typeof Midi === 'function') return Midi;
@@ -2325,7 +2338,9 @@ function scrubTo(pct) {
   updateScrubBar(pct);
   if (midiPlaying) {
     midiStopTimers();
-    midiSchedule();
+    midiStartTime = ctx.currentTime;
+    midiBuildQueue();
+    midiStartScheduler();
   }
 }
 
@@ -2363,8 +2378,8 @@ function getScrubPct(e, el) {
 document.getElementById('midi-play').addEventListener('click', () => {
   if (!midiData) return;
   if (midiPlaying) {
-    // Pause
-    midiPosition += ctx.currentTime - midiStartTime;
+    // Pause — record how far through the file we got
+    midiPosition += (ctx.currentTime - midiStartTime) / midiTempoScale;
     midiStopTimers();
     midiPlaying = false;
     midiPaused  = true;
@@ -2395,8 +2410,10 @@ function setMidiTempo(pct) {
       const btn = document.getElementById('tempo-' + v);
       if (btn) btn.classList.toggle('active', parseInt(v) === pct);
     });
+    midiTempoScale = 100 / pct;
     midiStopTimers();
-    midiSchedule();
+    midiBuildQueue();
+    midiStartScheduler();
   } else {
     document.getElementById('midi-tempo').value = pct;
     ['50','75','100'].forEach(v => {
@@ -2412,22 +2429,27 @@ document.getElementById('midi-vol').addEventListener('input', e => {
 });
 
 // ── Scheduling ────────────────────────────────────────────────────────────────
+
 function midiStartPlayback() {
   if (!midiData || !midiTracks.length) return;
   initAudio();
   if (ctx.state === 'suspended') ctx.resume();
-  midiPlaying   = true;
-  midiPaused    = false;
-  midiStartTime = ctx.currentTime;
-  midiSchedule();
+  midiPlaying      = true;
+  midiPaused       = false;
+  midiStartTime    = ctx.currentTime;
+  midiTempoScale   = 100 / parseInt(document.getElementById('midi-tempo').value);
+  midiBuildQueue();
+  midiStartScheduler();
   const pb = document.getElementById('midi-play');
   pb.textContent = '⏸ PAUSE';
   pb.classList.add('active');
 }
 
-function midiSchedule() {
-  const tempoScale = 100 / parseInt(document.getElementById('midi-tempo').value);
-  midiTimers = [];
+// Build a flat, time-sorted array of every note event across all tracks.
+// Each entry carries everything the scheduler needs so it touches no globals mid-tick.
+function midiBuildQueue() {
+  midiNoteQueue = [];
+  const ts = midiTempoScale;
 
   midiData.tracks.forEach((rawTrack, rawIdx) => {
     const track = midiTracks.find(t => t.index === rawIdx);
@@ -2435,98 +2457,133 @@ function midiSchedule() {
     if (!track.sfInstr && track.instrId !== '__drums__' && track.instrId !== '__oscillator__') return;
 
     rawTrack.notes.forEach(note => {
-      const absStart = note.time * tempoScale;
-      const absDur   = note.duration * tempoScale;
-      // Skip notes before current position
-      if (absStart + absDur < midiPosition * tempoScale) return;
-      const delay = (absStart - midiPosition * tempoScale) * 1000;
-      if (delay < -50) return; // already past
+      const absStart = note.time * ts;           // seconds from file start
+      const absDur   = note.duration * ts;
 
-// Calculate the exact time in the FUTURE the audio clock should hit this note
-const targetTime = ctx.currentTime + (delay / 1000);
+      // Skip notes that have entirely passed the current position
+      if (absStart + absDur < midiPosition * ts) return;
 
-      const onTimer = setTimeout(() => {
-        if (!midiPlaying) return;
-        const shouldPlay = anySoloed ? track.soloed : !track.muted;
-        if (!shouldPlay) return;
-        try {
-          if (track.instrId === '__drums__') {
-            const kitId = track.drumKitId || activeDrumKitId;
-            const savedKit = activeDrumKitId;
-            activeDrumKitId = kitId;
-            playDrumNote(note.midi, Math.round(note.velocity * 127), targetTime);
-            activeDrumKitId = savedKit;
-            highlightKey(note.midi, true);
-          } else if (track.instrId === '__oscillator__') {
-            // Oscillator track: create a scheduled OSC node
-            const freq = midiToFreq(note.midi);
-            const vel  = note.velocity;
-            const osc  = ctx.createOscillator();
-            osc.type   = track.oscWave || waveType;
-            osc.frequency.value = freq;
-            const gain = ctx.createGain();
-            gain.gain.setValueAtTime(0, targetTime);
-            gain.gain.linearRampToValueAtTime(vel * env.s * midiVolume, targetTime + env.a);
-            gain.gain.linearRampToValueAtTime(vel * env.s * midiVolume * 0.8, targetTime + env.a + env.d);
-            gain.gain.setValueAtTime(vel * env.s * midiVolume * 0.8, targetTime + absDur - env.r);
-            gain.gain.linearRampToValueAtTime(0, targetTime + absDur);
-            gain.connect(oscGainNode);
-            osc.connect(gain);
-            osc.start(targetTime);
-            osc.stop(targetTime + absDur + 0.05);
-            if (track.noteActive.has(note.midi)) {
-              try { track.noteActive.get(note.midi).stop(targetTime); } catch(e) {}
-            }
-            track.noteActive.set(note.midi, osc);
-            highlightKey(note.midi, true);
-          } else if (track.sfInstr) {
-            if (track.noteActive.has(note.midi)) {
-              try { track.noteActive.get(note.midi).stop(); } catch(e) {}
-            }
-            const node = track.sfInstr.play(note.midi, targetTime, {
-              gain: note.velocity * midiVolume, 
-              duration: absDur + 1,
-            });
-            track.noteActive.set(note.midi, node);
-            highlightKey(note.midi, true);
-          }
-        } catch(e) {}
-      }, Math.max(0, delay));
-
-      const offTimer = setTimeout(() => {
-        if (!midiPlaying) return;
-        try {
-          if (track.instrId !== '__drums__' && track.noteActive.has(note.midi)) {
-            try { track.noteActive.get(note.midi).stop(targetTime + absDur); } catch(e) {}
-            track.noteActive.delete(note.midi);
-          }
-          highlightKey(note.midi, false);
-        } catch(e) {}
-      }, Math.max(0, delay + absDur * 1000));
-
-      midiTimers.push(onTimer, offTimer);
+      midiNoteQueue.push({ absStart, absDur, note, track });
     });
   });
 
-  // Progress update
-  const totalRemaining = (midiDuration - midiPosition) * tempoScale * 1000;
+  // Sort ascending by start time so the scheduler can walk from the front
+  midiNoteQueue.sort((a, b) => a.absStart - b.absStart);
+}
+
+// The lookahead scheduler — runs every MIDI_SCHEDULER_MS and pre-schedules
+// any notes that fall within the next MIDI_LOOKAHEAD_S seconds on the audio clock.
+function midiSchedulerTick() {
+  if (!midiPlaying) return;
+
+  // How far through the file are we right now, measured on the audio clock
+  const fileElapsed = midiPosition + (ctx.currentTime - midiStartTime) / midiTempoScale;
+  // The audio-clock horizon up to which we schedule
+  const horizon = fileElapsed + MIDI_LOOKAHEAD_S;
+
+  while (midiNoteQueue.length > 0 && midiNoteQueue[0].absStart / midiTempoScale <= horizon) {
+    const ev = midiNoteQueue.shift();
+    const { absStart, absDur, note, track } = ev;
+
+    // Absolute time on the audio clock when this note should sound
+    const playAt = midiStartTime + absStart / midiTempoScale;
+    // Guard: never schedule in the past (audio API would fire immediately, causing drift)
+    const safePlayAt = Math.max(ctx.currentTime + 0.001, playAt);
+
+    midiFireNote(track, note, absDur / midiTempoScale, safePlayAt);
+
+    // Schedule the visual key-off using a plain setTimeout — cosmetic only
+    const offDelay = Math.max(0, (playAt - ctx.currentTime + absDur / midiTempoScale) * 1000);
+    setTimeout(() => { highlightKey(note.midi, false); }, offDelay);
+  }
+}
+
+// Fire a single note onto the audio clock at the given absolute audio time.
+function midiFireNote(track, note, durSec, playAt) {
+  const shouldPlay = anySoloed ? track.soloed : !track.muted;
+  if (!shouldPlay) return;
+
+  try {
+    if (track.instrId === '__drums__') {
+      const kitId    = track.drumKitId || activeDrumKitId;
+      const savedKit = activeDrumKitId;
+      activeDrumKitId = kitId;
+      playDrumNote(note.midi, Math.round(note.velocity * 127), playAt);
+      activeDrumKitId = savedKit;
+      highlightKey(note.midi, true);
+
+    } else if (track.instrId === '__oscillator__') {
+      const freq = midiToFreq(note.midi);
+      const vel  = note.velocity;
+      const osc  = ctx.createOscillator();
+      osc.type   = track.oscWave || waveType;
+      osc.frequency.value = freq;
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0, playAt);
+      gain.gain.linearRampToValueAtTime(vel * env.s * midiVolume,       playAt + env.a);
+      gain.gain.linearRampToValueAtTime(vel * env.s * midiVolume * 0.8, playAt + env.a + env.d);
+      gain.gain.setValueAtTime(       vel * env.s * midiVolume * 0.8,   playAt + durSec - env.r);
+      gain.gain.linearRampToValueAtTime(0, playAt + durSec);
+      gain.connect(oscGainNode);
+      osc.connect(gain);
+      if (track.noteActive.has(note.midi)) {
+        try { track.noteActive.get(note.midi).stop(playAt); } catch(e) {}
+      }
+      osc.start(playAt);
+      osc.stop(playAt + durSec + 0.05);
+      track.noteActive.set(note.midi, osc);
+      highlightKey(note.midi, true);
+
+    } else if (track.sfInstr) {
+      if (track.noteActive.has(note.midi)) {
+        try { track.noteActive.get(note.midi).stop(); } catch(e) {}
+      }
+      const node = track.sfInstr.play(note.midi, playAt, {
+        gain:     note.velocity * midiVolume,
+        duration: durSec + 1,
+      });
+      track.noteActive.set(note.midi, node);
+      highlightKey(note.midi, true);
+    }
+  } catch(e) {}
+}
+
+function midiStartScheduler() {
+  midiStopScheduler(); // clear any previous interval
+
+  // Run one tick immediately so the first notes are scheduled before the interval fires
+  midiSchedulerTick();
+
+  midiSchedulerInterval = setInterval(midiSchedulerTick, MIDI_SCHEDULER_MS);
+
+  // Progress bar (cosmetic — JS clock is fine here)
   const progressInterval = setInterval(() => {
     if (!midiPlaying) { clearInterval(progressInterval); return; }
-    const elapsed = midiPosition + (ctx.currentTime - midiStartTime) / tempoScale;
-    const pct = Math.min(100, (elapsed / midiDuration) * 100);
-    updateScrubBar(pct);
+    const elapsed = midiPosition + (ctx.currentTime - midiStartTime) / midiTempoScale;
+    updateScrubBar(Math.min(100, (elapsed / midiDuration) * 100));
   }, 100);
   midiTimers.push(progressInterval);
 
+  // End-of-song timer — add generous padding so the last notes decay cleanly
+  const totalRemaining = (midiDuration - midiPosition) * midiTempoScale * 1000;
   const endTimer = setTimeout(() => {
     midiStopPlayback();
     midiPosition = 0;
     updateScrubBar(100);
-  }, totalRemaining + 500);
+  }, totalRemaining + 1500);
   midiTimers.push(endTimer);
 }
 
+function midiStopScheduler() {
+  if (midiSchedulerInterval !== null) {
+    clearInterval(midiSchedulerInterval);
+    midiSchedulerInterval = null;
+  }
+}
+
 function midiStopTimers() {
+  midiStopScheduler();
+  midiNoteQueue = [];
   midiTimers.forEach(t => { clearTimeout(t); clearInterval(t); });
   midiTimers = [];
   midiTracks.forEach(track => {
