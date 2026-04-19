@@ -551,6 +551,7 @@
     <div style="display:flex;gap:6px;margin-bottom:10px;">
       <button class="scope-btn" id="midi-play" style="flex:1" disabled>▶ PLAY</button>
       <button class="scope-btn" id="midi-stop" style="flex:1" disabled>■ STOP</button>
+      <button class="scope-btn" id="midi-loop" style="flex:0 0 auto;padding:5px 12px;" title="Loop">&#x27F3;</button>
     </div>
     <div style="margin-bottom:8px;">
       <div class="knob-label" style="margin-bottom:4px">TEMPO</div>
@@ -564,6 +565,11 @@
     <div style="margin-bottom:10px;">
       <div class="knob-label" style="margin-bottom:4px">MIDI VOLUME <span id="midi-vol-val" style="color:var(--accent3)">100%</span></div>
       <input type="range" class="horiz" id="midi-vol" min="0" max="2" step="0.01" value="1">
+    </div>
+    <div id="loop-offset-row" style="display:none;align-items:center;gap:8px;margin-bottom:8px;">
+      <div class="knob-label" style="white-space:nowrap;">LOOP TAIL</div>
+      <input type="range" class="horiz" id="loop-offset" min="-500" max="2000" step="10" value="50" style="flex:1">
+      <div class="knob-val" id="loop-offset-val" style="min-width:42px;text-align:right;">50ms</div>
     </div>
     <div id="midi-load-status">LOADING INSTRUMENTS…</div>
     <div id="midi-track-list"></div>
@@ -1963,6 +1969,8 @@ let midiDuration    = 0;
 let midiTracks      = [];         // [{name,instrId,instrLabel,muted,soloed,sfInstr,channel,noteActive}]
 let midiVolume      = 1.0;
 let anySoloed       = false;
+let midiLoop        = false;      // loop playback when end is reached
+let midiLoopOffsetMs = 50;        // extra ms before looping (tweak to trim last beat)
 let midiNoteQueue   = [];         // sorted array of all pending note events
 let midiSchedulerInterval = null; // the lookahead scheduler interval handle
 let midiTempoScale  = 1.0;        // cached so scheduler doesn't read DOM every tick
@@ -2440,9 +2448,20 @@ function getScrubPct(e, el) {
   const wrap = document.getElementById('midi-scrub-wrap');
   if (!wrap) return;
   let dragging = false;
+
+  function scrubMute() {
+    if (masterGain) masterGain.gain.cancelScheduledValues(ctx.currentTime);
+    if (masterGain) masterGain.gain.setTargetAtTime(0, ctx.currentTime, 0.02);
+  }
+  function scrubUnmute() {
+    if (masterGain) masterGain.gain.cancelScheduledValues(ctx.currentTime);
+    if (masterGain) masterGain.gain.setTargetAtTime(0.7, ctx.currentTime, 0.05);
+  }
+
   function onDown(e) {
     if (!midiData) return;
     dragging = true;
+    if (midiPlaying) scrubMute();
     scrubTo(getScrubPct(e, wrap));
     e.preventDefault();
   }
@@ -2451,7 +2470,11 @@ function getScrubPct(e, el) {
     scrubTo(getScrubPct(e, wrap));
     e.preventDefault();
   }
-  function onUp() { dragging = false; }
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    if (midiPlaying) scrubUnmute();
+  }
   wrap.addEventListener('mousedown',  onDown);
   wrap.addEventListener('touchstart', onDown, {passive:false});
   document.addEventListener('mousemove', onMove);
@@ -2482,6 +2505,17 @@ document.getElementById('midi-stop').addEventListener('click', () => {
   midiStopPlayback();
   midiPosition = 0;
   updateScrubBar(0);
+});
+
+document.getElementById('midi-loop').addEventListener('click', function() {
+  midiLoop = !midiLoop;
+  this.classList.toggle('active', midiLoop);
+  document.getElementById('loop-offset-row').style.display = midiLoop ? 'flex' : 'none';
+});
+
+document.getElementById('loop-offset').addEventListener('input', function() {
+  midiLoopOffsetMs = parseInt(this.value);
+  document.getElementById('loop-offset-val').textContent = midiLoopOffsetMs + 'ms';
 });
 
 // scrubTo: jump to any position whether playing or paused.
@@ -2545,10 +2579,6 @@ function midiBeginFrom(filePos) {
   // Clamp to valid range
   midiPosition  = Math.max(0, Math.min(midiDuration, filePos));
 
-  // Read tempo from DOM only if it hasn't been set by setMidiTempo
-  // (midiTempoScale is initialised to 1.0 and updated by setMidiTempo)
-  midiTempoScale = 100 / parseInt(document.getElementById('midi-tempo').value);
-
   // Anchor the audio clock to the new position
   midiStartTime = ctx.currentTime;
 
@@ -2565,6 +2595,7 @@ function midiBeginFrom(filePos) {
 
 // Keep the old name so any other callers still work
 function midiStartPlayback() {
+  midiTempoScale = 100 / parseInt(document.getElementById('midi-tempo').value);
   midiBeginFrom(midiPosition);
 }
 
@@ -2688,10 +2719,15 @@ function midiStartScheduler() {
   // End-of-song: remaining file-seconds * tempoScale = remaining real seconds
   const remainingRealMs = (midiDuration - midiPosition) * midiTempoScale * 1000;
   const endTimer = setTimeout(() => {
-    midiStopPlayback();
-    midiPosition = 0;
-    updateScrubBar(100);
-  }, remainingRealMs + 1500);
+    if (midiLoop) {
+      midiStopTimers();
+      midiBeginFrom(0);
+    } else {
+      midiStopPlayback();
+      midiPosition = 0;
+      updateScrubBar(100);
+    }
+  }, remainingRealMs + (midiLoop ? midiLoopOffsetMs : 1500));
   midiTimers.push(endTimer);
 }
 
