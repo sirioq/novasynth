@@ -1954,7 +1954,7 @@ document.getElementById('start-overlay').addEventListener('click',()=>{
 // How far ahead (in seconds) notes are pre-scheduled onto the audio clock.
 // Increase if drums & instruments drift on mobile; decrease for snappier mute/solo response.
 // Good starting range: 0.05 (desktop) → 0.25 (slow mobile). Default: 0.15
-const MIDI_LOOKAHEAD_S = 0.15;
+const MIDI_LOOKAHEAD_S = 0.25;
 // How often the scheduler wakes up (ms). Should be well under MIDI_LOOKAHEAD_S * 1000.
 const MIDI_SCHEDULER_MS = 25;
 // ──────────────────────────────────────────────────────────────────────────────
