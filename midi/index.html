@@ -79,10 +79,7 @@ input[type=range].nr::-webkit-slider-thumb{-webkit-appearance:none;width:22px;he
 <body>
 <div class="nw">
   <div class="nh">
-    <div>
-      <div class="nlogo">NOVA·MX</div>
-      <div class="nsub">MIDI PLAYER + RIDDIM</div>
-    </div>
+    <div><div class="nlogo">NOVA·MX</div><div class="nsub">MIDI PLAYER + RIDDIM</div></div>
     <div class="leds">
       <div class="ledw"><div class="ledl">AUDIO</div><div class="led led-off" id="lA"></div></div>
       <div class="ledw"><div class="ledl">MIDI</div><div class="led led-off" id="lM"></div></div>
@@ -108,9 +105,7 @@ input[type=range].nr::-webkit-slider-thumb{-webkit-appearance:none;width:22px;he
       <button class="bbtn stop" id="stopBtn" disabled onclick="stopPlayback()">&#9632; STOP</button>
     </div>
     <div class="prog-wrap">
-      <div class="prog-bg" id="progBg">
-        <div class="prog-fill" id="pFill"></div>
-      </div>
+      <div class="prog-bg" id="progBg"><div class="prog-fill" id="pFill"></div></div>
       <div class="prog-time"><span id="tEl">0:00</span><span id="tTot">0:00</span></div>
     </div>
     <button class="bbtn loop" id="loopBtn" disabled onclick="toggleLoop()" style="width:100%;margin-top:6px;padding:12px">&#10227; LOOP OFF</button>
@@ -162,68 +157,159 @@ input[type=range].nr::-webkit-slider-thumb{-webkit-appearance:none;width:22px;he
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/midi-player-js@2.0.16/browser/midiplayer.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js"></script>
 <script>
-let audioCtx,instruments={},gainNode,analyser,scopeData;
-let midiPlayer,isPlaying=false,isLooped=false;
-let totalTicks=0,duration=0;
-let noteCount=0,midiOutCount=0;
-let activeNotes={},progMap={};
-let midiAccess=null,midiOut=null;
+// ─── MIDI PARSER ────────────────────────────────────────────────────────────
+function parseMidi(buf){
+  const view=new DataView(buf);
+  let pos=0;
+  function r1(){return view.getUint8(pos++);}
+  function r2(){const v=view.getUint16(pos);pos+=2;return v;}
+  function r4(){const v=view.getUint32(pos);pos+=4;return v;}
+  function rVar(){let v=0,b;do{b=r1();v=(v<<7)|(b&0x7f);}while(b&0x80);return v;}
+  function rStr(n){let s='';for(let i=0;i<n;i++)s+=String.fromCharCode(r1());return s;}
+
+  if(rStr(4)!=='MThd')throw new Error('Not a MIDI file');
+  r4(); // header length
+  const format=r2(), numTracks=r2(), division=r2();
+  const tracks=[];
+
+  for(let t=0;t<numTracks;t++){
+    if(rStr(4)!=='MTrk')throw new Error('Bad track');
+    const trackLen=r4();
+    const trackEnd=pos+trackLen;
+    const events=[];
+    let tick=0, lastStatus=0;
+
+    while(pos<trackEnd){
+      const delta=rVar();
+      tick+=delta;
+      let status=view.getUint8(pos);
+
+      if(status&0x80){pos++;lastStatus=status;}
+      else{status=lastStatus;}
+
+      const type=status&0xf0, ch=(status&0x0f)+1;
+
+      if(type===0x80||type===0x90){
+        const note=r1(),vel=r1();
+        events.push({tick,type:(type===0x90&&vel>0)?'noteon':'noteoff',ch,note,vel});
+      } else if(type===0xa0){r1();r1();}
+      else if(type===0xb0){const ctrl=r1(),val=r1();events.push({tick,type:'cc',ch,ctrl,val});}
+      else if(type===0xc0){const prog=r1();events.push({tick,type:'pc',ch,prog});}
+      else if(type===0xd0){r1();}
+      else if(type===0xe0){r1();r1();}
+      else if(status===0xff){
+        const meta=r1(),len=rVar();
+        if(meta===0x51&&len===3){
+          const us=(r1()<<16)|(r1()<<8)|r1();
+          events.push({tick,type:'tempo',us});
+        } else { pos+=len; }
+      } else if(status===0xf0||status===0xf7){
+        const len=rVar(); pos+=len;
+      } else { pos++; }
+    }
+    pos=trackEnd;
+    tracks.push(events);
+  }
+  return{format,division,tracks};
+}
+
+// ─── FLATTEN & SORT ALL EVENTS ──────────────────────────────────────────────
+function buildTimeline(parsed){
+  // Merge all track events, sorted by tick
+  const all=[];
+  parsed.tracks.forEach(t=>t.forEach(e=>all.push(e)));
+  all.sort((a,b)=>a.tick-b.tick||(a.type==='tempo'?-1:b.type==='tempo'?1:0));
+
+  // Convert ticks to seconds using tempo map
+  const division=parsed.division;
+  let usPerBeat=500000; // default 120bpm
+  let lastTick=0, lastSec=0;
+  const timeline=[];
+
+  all.forEach(e=>{
+    const secsSinceLastTempo=((e.tick-lastTick)/division)*(usPerBeat/1000000);
+    const sec=lastSec+secsSinceLastTempo;
+    if(e.type==='tempo'){
+      lastTick=e.tick; lastSec=sec; usPerBeat=e.us;
+    }
+    timeline.push({...e,sec});
+  });
+  return{timeline,division,initialUs:500000};
+}
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let audioCtx,gainNode,analyser,scopeData;
+let instruments={};
+let midiData=null;       // parsed midi
+let timeline=[];         // flat sorted events with .sec timestamps
+let duration=0;
+let isPlaying=false, isLooped=false;
+let startAudioTime=0;    // audioCtx.currentTime when playback started
+let startSongTime=0;     // song position (seconds) when playback started
+let scheduleIdx=0;       // next event index to schedule
+let schedTimer=null;
+let rafId=null;
+let midiAccess=null, midiOut=null;
 let routedChannels=new Set([10]);
+let progMap={};
+let noteCount=0, midiOutCount=0;
 let logLines=[];
-let progressTimer=null;
 
 const GM=['acoustic_grand_piano','bright_acoustic_piano','electric_grand_piano','honkytonk_piano','electric_piano_1','electric_piano_2','harpsichord','clavinet','celesta','glockenspiel','music_box','vibraphone','marimba','xylophone','tubular_bells','dulcimer','drawbar_organ','percussive_organ','rock_organ','church_organ','reed_organ','accordion','harmonica','tango_accordion','acoustic_guitar_nylon','acoustic_guitar_steel','electric_guitar_jazz','electric_guitar_clean','electric_guitar_muted','overdriven_guitar','distortion_guitar','guitar_harmonics','acoustic_bass','electric_bass_finger','electric_bass_pick','fretless_bass','slap_bass_1','slap_bass_2','synth_bass_1','synth_bass_2','violin','viola','cello','contrabass','tremolo_strings','pizzicato_strings','orchestral_harp','timpani','string_ensemble_1','string_ensemble_2','synth_strings_1','synth_strings_2','choir_aahs','voice_oohs','synth_voice','orchestra_hit','trumpet','trombone','tuba','muted_trumpet','french_horn','brass_section','synth_brass_1','synth_brass_2','soprano_sax','alto_sax','tenor_sax','baritone_sax','oboe','english_horn','bassoon','clarinet','piccolo','flute','recorder','pan_flute','blown_bottle','shakuhachi','whistle','ocarina','lead_1_square','lead_2_sawtooth','lead_3_calliope','lead_4_chiff','lead_5_charang','lead_6_voice','lead_7_fifths','lead_8_bass_lead','pad_1_new_age','pad_2_warm','pad_3_polysynth','pad_4_choir','pad_5_bowed','pad_6_metallic','pad_7_halo','pad_8_sweep','fx_1_rain','fx_2_soundtrack','fx_3_crystal','fx_4_atmosphere','fx_5_brightness','fx_6_goblins','fx_7_echoes','fx_8_sci-fi','sitar','banjo','shamisen','koto','kalimba','bag_pipe','fiddle','shanai','tinkle_bell','agogo','steel_drums','woodblock','taiko_drum','melodic_tom','synth_drum','reverse_cymbal','guitar_fret_noise','breath_noise','seashore','bird_tweet','telephone_ring','helicopter','applause','gunshot'];
 
 const DNAMES={27:'High Q',28:'Slap',29:'Scratch Push',30:'Scratch Pull',31:'Sticks',32:'Square Click',33:'Metro Click',34:'Metro Bell',35:'Kick 2',36:'Kick 1',37:'Side Stick',38:'Snare',39:'Hand Clap',40:'Snare 2',41:'Low Tom',42:'Hi-Hat Cl',43:'High Tom',44:'Hi-Hat Pd',45:'Mid Tom',46:'Hi-Hat Op',47:'Lo-Mid Tom',48:'Hi-Mid Tom',49:'Crash 1',50:'High Tom 2',51:'Ride',52:'China',53:'Ride Bell',54:'Tambourine',55:'Splash',56:'Cowbell',57:'Crash 2',58:'Vibraslap',59:'Ride 2',60:'Hi Bongo',61:'Lo Bongo',62:'Mute Hi Conga',63:'Open Hi Conga',64:'Low Conga',65:'Hi Timbale',66:'Lo Timbale',67:'Hi Agogo',68:'Lo Agogo',69:'Cabasa',70:'Maracas',71:'Hi Whistle',72:'Lo Whistle',73:'Short Guiro',74:'Long Guiro',75:'Claves',76:'Hi Wood Blk',77:'Lo Wood Blk',78:'Mute Cuica',79:'Open Cuica',80:'Mute Triangle',81:'Open Triangle'};
 
-function resizeScope(){
-  const cv=document.getElementById('scope');
-  cv.width=cv.parentElement.offsetWidth;
-  cv.height=90;
-}
-
+// ─── AUDIO SETUP ─────────────────────────────────────────────────────────────
 function initAudio(){
   audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-  gainNode=audioCtx.createGain();gainNode.gain.value=0.8;
-  analyser=audioCtx.createAnalyser();analyser.fftSize=512;
+  gainNode=audioCtx.createGain(); gainNode.gain.value=0.8;
+  analyser=audioCtx.createAnalyser(); analyser.fftSize=512;
   scopeData=new Uint8Array(analyser.frequencyBinCount);
-  gainNode.connect(analyser);analyser.connect(audioCtx.destination);
-  drawScope();
+  gainNode.connect(analyser); analyser.connect(audioCtx.destination);
 }
 
+// ─── SCOPE ────────────────────────────────────────────────────────────────────
+function resizeScope(){
+  const cv=document.getElementById('scope');
+  cv.width=cv.parentElement.offsetWidth; cv.height=90;
+}
 function drawScope(){
+  rafId=requestAnimationFrame(drawScope);
   const cv=document.getElementById('scope'),ctx=cv.getContext('2d');
-  requestAnimationFrame(drawScope);
   if(analyser)analyser.getByteTimeDomainData(scopeData);
-  ctx.fillStyle='#080810';ctx.fillRect(0,0,cv.width,cv.height);
-  ctx.strokeStyle=isPlaying?'#00ff88':'#1a2a1a';ctx.lineWidth=2;
+  ctx.fillStyle='#080810'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.strokeStyle=isPlaying?'#00ff88':'#1a2a1a'; ctx.lineWidth=2;
   ctx.beginPath();
-  const sw=cv.width/scopeData.length;
-  const mid=cv.height/2;
+  const sw=cv.width/scopeData.length, mid=cv.height/2;
   for(let i=0;i<scopeData.length;i++){
-    const v=(scopeData[i]-128)/128;
-    const y=mid+(v*mid*2.4);
+    const y=mid+((scopeData[i]-128)/128)*mid*2.4;
     i===0?ctx.moveTo(0,y):ctx.lineTo(i*sw,y);
   }
   ctx.stroke();
 }
 
+// ─── CHANNEL GRID ────────────────────────────────────────────────────────────
 function buildChanGrid(){
-  const g=document.getElementById('chanGrid');g.innerHTML='';
+  const g=document.getElementById('chanGrid'); g.innerHTML='';
   for(let i=1;i<=16;i++){
     const c=document.createElement('div');
-    c.className='ch';c.id='ch'+i;c.textContent=i;g.appendChild(c);
+    c.className='ch'; c.id='ch'+i; c.textContent=i; g.appendChild(c);
   }
 }
+function flashCh(ch,cls){
+  const el=document.getElementById('ch'+ch); if(!el)return;
+  el.classList.add(cls);
+  clearTimeout(el['_'+cls]); el['_'+cls]=setTimeout(()=>el.classList.remove(cls),110);
+}
 
+// ─── CH FILTER ───────────────────────────────────────────────────────────────
 function buildChFilter(){
-  const g=document.getElementById('chFilter');g.innerHTML='';
+  const g=document.getElementById('chFilter'); g.innerHTML='';
   for(let i=1;i<=16;i++){
-    const d=document.createElement('div');
     const isDrum=i===10;
+    const d=document.createElement('div');
     d.className='cf'+(isDrum?' drum on':(routedChannels.has(i)?' on':''));
     d.textContent='CH'+i+(isDrum?'*':'');
     d.onclick=()=>{
@@ -234,237 +320,274 @@ function buildChFilter(){
   }
 }
 
-function buildDrumMap(tracks){
+// ─── DRUM MAP ────────────────────────────────────────────────────────────────
+function buildDrumMap(){
   const notes=new Set();
-  tracks.forEach(t=>{
-    t.events.forEach(e=>{
-      if(e.channel===10&&e.noteNumber!=null&&e.velocity>0)notes.add(e.noteNumber);
-    });
-  });
+  timeline.forEach(e=>{if(e.type==='noteon'&&e.ch===10)notes.add(e.note);});
   const dm=document.getElementById('drumMap');
   if(!notes.size){dm.innerHTML='<div class="dm-empty">no ch10 notes found</div>';return;}
   const sorted=[...notes].sort((a,b)=>a-b);
   let html='<div style="font-size:9px;color:#444;margin-bottom:6px;letter-spacing:1px">'+sorted.length+' UNIQUE NOTES ON CH10</div><div class="dm-grid">';
-  sorted.forEach(n=>{
-    html+='<div class="dm-cell"><span class="dm-num">'+n+'</span><span class="dm-name">'+(DNAMES[n]||'Unknown')+'</span></div>';
-  });
+  sorted.forEach(n=>{html+='<div class="dm-cell"><span class="dm-num">'+n+'</span><span class="dm-name">'+(DNAMES[n]||'Unknown')+'</span></div>';});
   dm.innerHTML=html+'</div>';
 }
 
-function fmtT(s){
-  s=Math.max(0,Math.floor(s));
-  return Math.floor(s/60)+':'+(''+(s%60)).padStart(2,'0');
-}
-
-function startProgressTimer(){
-  clearInterval(progressTimer);
-  progressTimer=setInterval(()=>{
-    if(!midiPlayer||!isPlaying)return;
-    const elapsed=midiPlayer.getSongTime()-midiPlayer.getSongTimeRemaining();
-    const pct=duration>0?Math.min(100,(elapsed/duration)*100):0;
-    document.getElementById('pFill').style.width=pct.toFixed(2)+'%';
-    document.getElementById('tEl').textContent=fmtT(elapsed);
-  },200);
-}
-
-function stopProgressTimer(){clearInterval(progressTimer);}
-
+// ─── MIDI OUTPUT ─────────────────────────────────────────────────────────────
 async function scanMidi(){
   const btn=document.getElementById('scanBtn');
-  btn.classList.add('scanning');btn.textContent='SCANNING...';
+  btn.classList.add('scanning'); btn.textContent='SCANNING...';
   if(!navigator.requestMIDIAccess){
-    setStat('web midi not supported in this browser','ms-err');
-    btn.classList.remove('scanning');btn.textContent='SCAN FOR RIDDIM';return;
+    setStat('web midi not supported','ms-err');
+    btn.classList.remove('scanning'); btn.textContent='SCAN FOR RIDDIM'; return;
   }
   try{
     midiAccess=await navigator.requestMIDIAccess({sysex:false});
     populateOutputs();
-    midiAccess.onstatechange=()=>populateOutputs();
+    midiAccess.onstatechange=populateOutputs;
     document.getElementById('lM').className='led led-midi';
-    btn.classList.remove('scanning');btn.textContent='SCAN FOR RIDDIM';
-  }catch(e){
-    setStat('permission denied · allow in Chrome settings','ms-err');
-    btn.classList.remove('scanning');btn.textContent='SCAN FOR RIDDIM';
-  }
+  }catch(e){setStat('permission denied · allow in Chrome','ms-err');}
+  btn.classList.remove('scanning'); btn.textContent='SCAN FOR RIDDIM';
 }
-
 function populateOutputs(){
-  const sel=document.getElementById('midiSel');
-  const prev=sel.value;
+  const sel=document.getElementById('midiSel'), prev=sel.value;
   sel.innerHTML='<option value="">-- NO OUTPUT --</option>';
   let count=0;
   midiAccess.outputs.forEach((out,id)=>{
     const o=document.createElement('option');
-    o.value=id;
-    o.textContent=out.name.toLowerCase().includes('riddim')?'\u2605 '+out.name:out.name;
-    sel.appendChild(o);count++;
+    o.value=id; o.textContent=out.name.toLowerCase().includes('riddim')?'\u2605 '+out.name:out.name;
+    sel.appendChild(o); count++;
   });
   if(prev)sel.value=prev;
-  if(!count){setStat('no devices found · connect Riddim, tap scan','ms-warn');}
-  else{setStat(count+' device'+(count>1?'s':'')+' found','ms-ok');}
+  setStat(count?count+' device'+(count>1?'s':'')+' found · select below':'no devices found · connect & scan','ms-'+(count?'ok':'warn'));
   sel.onchange=()=>{
     const id=sel.value;
-    if(id){midiOut=midiAccess.outputs.get(id);setStat('routed \u2192 '+midiOut.name,'ms-ok');}
-    else{midiOut=null;setStat('no output selected','ms-warn');}
+    midiOut=id?midiAccess.outputs.get(id):null;
+    setStat(midiOut?'routed \u2192 '+midiOut.name:'no output selected',midiOut?'ms-ok':'ms-warn');
   };
   if(count===1){sel.selectedIndex=1;sel.onchange();}
 }
-
-function setStat(txt,cls){
-  const el=document.getElementById('mStat');
-  el.textContent=txt;el.className='midi-status '+(cls||'ms-off');
-}
+function setStat(txt,cls){const el=document.getElementById('mStat');el.textContent=txt;el.className='midi-status '+(cls||'ms-off');}
 
 function sendMidi(ch,note,vel,off){
   if(!midiOut)return;
   const mv=parseInt(document.getElementById('mvolS').value);
   const v=off?0:Math.round(vel*(mv/127));
-  try{
-    midiOut.send([(off?0x80:0x90)|(ch-1),note,v]);
-    midiOutCount++;document.getElementById('mC').textContent=midiOutCount;
-    const ln=document.createElement('div');
-    ln.className='nline out';
-    const dn=ch===10?(DNAMES[note]||'N'+note):'N'+note;
-    ln.textContent=(off?'OFF':'ON ')+' CH'+ch+' '+dn+(vel?' v'+vel:'');
-    const log=document.getElementById('noteLog');
-    log.insertBefore(ln,log.firstChild);
-    logLines.push(ln);
-    if(logLines.length>30){const o=logLines.shift();if(o.parentNode)o.parentNode.removeChild(o);}
-    flashMidi(ch);
-  }catch(e){}
+  try{midiOut.send([(off?0x80:0x90)|(ch-1),note,v]);}catch(e){return;}
+  midiOutCount++; document.getElementById('mC').textContent=midiOutCount;
+  const dn=ch===10?(DNAMES[note]||'N'+note):'N'+note;
+  const ln=document.createElement('div');
+  ln.className='nline out';
+  ln.textContent=(off?'OFF':'ON ')+' CH'+ch+' '+dn+(vel?' v'+vel:'');
+  const log=document.getElementById('noteLog');
+  log.insertBefore(ln,log.firstChild);
+  logLines.push(ln);
+  if(logLines.length>30){const o=logLines.shift();if(o.parentNode)o.parentNode.removeChild(o);}
+  flashCh(ch,'midi-active');
 }
 
-function flashMidi(ch){
-  const el=document.getElementById('ch'+ch);if(!el)return;
-  el.classList.add('midi-active');
-  clearTimeout(el._m);el._m=setTimeout(()=>el.classList.remove('midi-active'),100);
-}
-function flashAudio(ch){
-  const el=document.getElementById('ch'+ch);if(!el)return;
-  el.classList.add('active');
-  clearTimeout(el._a);el._a=setTimeout(()=>el.classList.remove('active'),120);
+// Track every soundfont node so we can kill them instantly
+let activeNodes=[];
+
+function allNotesOff(){
+  // Ramp down and stop all soundfont nodes immediately
+  const t=audioCtx?audioCtx.currentTime:0;
+  activeNodes.forEach(n=>{try{n.gain.setTargetAtTime(0,t,0.01);n.stop(t+0.05);}catch(e){}});
+  activeNodes=[];
+  // MIDI all-notes-off
+  if(midiOut){for(let ch=0;ch<16;ch++)try{midiOut.send([0xb0|ch,123,0]);}catch(e){}}
 }
 
+// ─── SCHEDULER ───────────────────────────────────────────────────────────────
+const LOOKAHEAD=0.15; // seconds ahead to schedule
+const TICK_MS=25;     // how often to run scheduler
+
+function getCurrentSongTime(){
+  if(!isPlaying)return startSongTime;
+  return startSongTime+(audioCtx.currentTime-startAudioTime);
+}
+
+function findIndexAtTime(t){
+  // Binary search for first event at or after time t
+  let lo=0,hi=timeline.length;
+  while(lo<hi){const mid=(lo+hi)>>1;timeline[mid].sec<t?lo=mid+1:hi=mid;}
+  return lo;
+}
+
+function schedule(){
+  if(!isPlaying)return;
+  const now=audioCtx.currentTime;
+  const horizon=now+LOOKAHEAD;
+
+  while(scheduleIdx<timeline.length){
+    const ev=timeline[scheduleIdx];
+    const evAudioTime=startAudioTime+(ev.sec-startSongTime);
+    if(evAudioTime>horizon)break;
+    scheduleIdx++;
+
+    if(ev.type==='pc') progMap[ev.ch]=ev.ch===10?'percussion':(GM[ev.prog]||'acoustic_grand_piano');
+
+    if(ev.type==='noteon'){
+      noteCount++; document.getElementById('nC').textContent=noteCount;
+      flashCh(ev.ch,'active');
+      if(routedChannels.has(ev.ch)&&midiOut){
+        sendMidi(ev.ch,ev.note,ev.vel,false);
+      } else {
+        const prog=progMap[ev.ch]||(ev.ch===10?'percussion':'acoustic_grand_piano');
+        const inst=instruments[prog]||instruments['acoustic_grand_piano'];
+        if(inst){
+          const when=Math.max(audioCtx.currentTime,evAudioTime);
+          const node=inst.play(noteNumToName(ev.note),when,{gain:(ev.vel/127)*gainNode.gain.value*1.2,duration:2});
+          if(node){
+            activeNodes.push(node);
+            // Auto-remove from tracking when it naturally ends
+            if(node.source)node.source.onended=()=>{const i=activeNodes.indexOf(node);if(i>-1)activeNodes.splice(i,1);};
+          }
+        }
+      }
+    }
+
+    if(ev.type==='noteoff'){
+      if(routedChannels.has(ev.ch)&&midiOut)sendMidi(ev.ch,ev.note,0,true);
+    }
+  }
+
+  if(scheduleIdx>=timeline.length){
+    // End of file
+    const lastEvTime=startAudioTime+(timeline[timeline.length-1].sec-startSongTime);
+    const delayMs=Math.max(0,(lastEvTime-audioCtx.currentTime+0.5))*1000;
+    clearTimeout(schedTimer);
+    schedTimer=setTimeout(()=>{
+      if(!isPlaying)return;
+      if(isLooped){seekTo(0);startPlayback();}
+      else{stopPlayback();}
+    },delayMs);
+    return;
+  }
+
+  schedTimer=setTimeout(schedule,TICK_MS);
+}
+
+function noteNumToName(n){
+  const names=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  return names[n%12]+(Math.floor(n/12)-1);
+}
+
+// ─── PROGRESS UI ─────────────────────────────────────────────────────────────
+function startProgressUI(){
+  function tick(){
+    if(!isPlaying){return;}
+    const t=Math.min(getCurrentSongTime(),duration);
+    const pct=duration>0?(t/duration)*100:0;
+    document.getElementById('pFill').style.width=pct.toFixed(2)+'%';
+    document.getElementById('tEl').textContent=fmtT(t);
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+function fmtT(s){s=Math.max(0,Math.floor(s));return Math.floor(s/60)+':'+(''+(s%60)).padStart(2,'0');}
+
+// ─── LOAD ─────────────────────────────────────────────────────────────────────
 function loadMidi(ab){
   if(!audioCtx)initAudio();
-  // Create fresh player each load
-  midiPlayer=new MidiPlayer.Player(handleEvent);
-  midiPlayer.loadArrayBuffer(ab);
+  stopPlayback();
+  try{
+    midiData=parseMidi(ab);
+  }catch(e){
+    document.getElementById('engS').textContent='PARSE ERR';return;
+  }
+  const built=buildTimeline(midiData);
+  timeline=built.timeline;
 
-  // getSongTime() returns total seconds reliably after loadArrayBuffer
-  duration=midiPlayer.getSongTime();
-  totalTicks=midiPlayer.getTotalTicks();
+  // duration = last note event time + small tail
+  const noteEvents=timeline.filter(e=>e.type==='noteon'||e.type==='noteoff');
+  duration=noteEvents.length?noteEvents[noteEvents.length-1].sec+1:0;
 
-  // tempo is already in BPM
-  const bpm=midiPlayer.tempo?Math.round(midiPlayer.tempo):120;
+  // BPM from first tempo event
+  const tempoEv=timeline.find(e=>e.type==='tempo');
+  const bpm=tempoEv?Math.round(60000000/tempoEv.us):120;
 
-  document.getElementById('iTr').textContent=midiPlayer.tracks?midiPlayer.tracks.length:'?';
+  const numTracks=midiData.tracks.length;
+  document.getElementById('iTr').textContent=numTracks;
   document.getElementById('iBpm').textContent=bpm;
   document.getElementById('iLen').textContent=fmtT(duration);
   document.getElementById('tTot').textContent=fmtT(duration);
+  document.getElementById('tEl').textContent='0:00';
+  document.getElementById('pFill').style.width='0%';
 
-  buildDrumMap(midiPlayer.tracks);
+  buildDrumMap();
   ['playBtn','stopBtn','loopBtn'].forEach(id=>document.getElementById(id).disabled=false);
 
-  midiPlayer.on('endOfFile',()=>{
-    stopProgressTimer();
-    if(isLooped){
-      midiPlayer.stop();
-      resetCounts();
-      isPlaying=false;
-      setTimeout(()=>{
-        if(audioCtx&&audioCtx.state==='suspended')audioCtx.resume();
-        midiPlayer.play();
-        isPlaying=true;
-        startProgressTimer();
-        document.getElementById('playBtn').textContent='\u23F8 PAUSE';
-        document.getElementById('playBtn').classList.add('active');
-        document.getElementById('lA').className='led led-on';
-      },80);
-    }else{
-      isPlaying=false;
-      document.getElementById('playBtn').textContent='\u25B6 PLAY';
-      document.getElementById('playBtn').classList.remove('active');
-      document.getElementById('lA').className='led led-off';
-      document.getElementById('pFill').style.width='100%';
-      document.getElementById('tEl').textContent=fmtT(duration);
-    }
-  });
-
+  // Preload instruments
   document.getElementById('engS').textContent='LOADING...';
-  const needed=new Set();
-  midiPlayer.tracks.forEach(t=>t.events.forEach(e=>{
-    if(e.name==='Program Change')needed.add(e.channel===10?'percussion':(GM[e.value]||'acoustic_grand_piano'));
-  }));
-  if(!needed.size)needed.add('acoustic_grand_piano');
+  const needed=new Set(['acoustic_grand_piano']);
+  timeline.forEach(e=>{if(e.type==='pc')needed.add(e.ch===10?'percussion':(GM[e.prog]||'acoustic_grand_piano'));});
+  // Also check if ch10 has notes without a PC event
+  if(timeline.some(e=>e.type==='noteon'&&e.ch===10))needed.add('percussion');
+
   Promise.all([...needed].map(n=>
-    Soundfont.instrument(audioCtx,n,{soundfont:'FluidR3_GM',destination:gainNode}).then(i=>{instruments[n]=i;})
+    Soundfont.instrument(audioCtx,n,{soundfont:'FluidR3_GM',destination:gainNode})
+      .then(i=>{instruments[n]=i;})
   )).then(()=>document.getElementById('engS').textContent='READY')
    .catch(()=>document.getElementById('engS').textContent='ERR');
 }
 
-function handleEvent(ev){
-  if(!ev||!ev.name)return;
-  const isOn=ev.name==='Note on'&&ev.velocity>0;
-  const isOff=ev.name==='Note off'||(ev.name==='Note on'&&ev.velocity===0);
-  if(ev.name==='Program Change')
-    progMap[ev.channel]=ev.channel===10?'percussion':(GM[ev.value]||'acoustic_grand_piano');
-  if(isOn){
-    noteCount++;document.getElementById('nC').textContent=noteCount;
-    flashAudio(ev.channel);
-    if(routedChannels.has(ev.channel)&&midiOut){
-      sendMidi(ev.channel,ev.noteNumber,ev.velocity,false);
-    }else{
-      const prog=progMap[ev.channel]||(ev.channel===10?'percussion':'acoustic_grand_piano');
-      const inst=instruments[prog]||instruments['acoustic_grand_piano'];
-      if(inst){
-        const n=inst.play(ev.noteName,audioCtx.currentTime,{gain:(ev.velocity/127)*gainNode.gain.value*1.2,duration:2});
-        if(!activeNotes[ev.channel])activeNotes[ev.channel]={};
-        activeNotes[ev.channel][ev.noteName]=n;
-      }
-    }
-  }
-  if(isOff){
-    if(routedChannels.has(ev.channel)&&midiOut){
-      sendMidi(ev.channel,ev.noteNumber,0,true);
-    }else if(activeNotes[ev.channel]&&activeNotes[ev.channel][ev.noteName]){
-      try{activeNotes[ev.channel][ev.noteName].stop();}catch(e){}
-      delete activeNotes[ev.channel][ev.noteName];
-    }
+// ─── PLAYBACK CONTROL ────────────────────────────────────────────────────────
+function startPlayback(){
+  if(audioCtx.state==='suspended')audioCtx.resume();
+  startAudioTime=audioCtx.currentTime;
+  // startSongTime already set by seekTo or defaults to 0
+  scheduleIdx=findIndexAtTime(startSongTime);
+  isPlaying=true;
+  clearTimeout(schedTimer);
+  schedule();
+  startProgressUI();
+  document.getElementById('playBtn').textContent='\u23F8 PAUSE';
+  document.getElementById('playBtn').classList.add('active');
+  document.getElementById('lA').className='led led-on';
+}
+
+function pausePlayback(){
+  startSongTime=getCurrentSongTime(); // save position
+  isPlaying=false;
+  clearTimeout(schedTimer);
+  allNotesOff();
+  document.getElementById('playBtn').textContent='\u25B6 PLAY';
+  document.getElementById('playBtn').classList.remove('active');
+  document.getElementById('lA').className='led led-off';
+}
+
+function seekTo(t){
+  startSongTime=Math.max(0,Math.min(t,duration));
+  // Update UI
+  const pct=duration>0?(startSongTime/duration)*100:0;
+  document.getElementById('pFill').style.width=pct.toFixed(2)+'%';
+  document.getElementById('tEl').textContent=fmtT(startSongTime);
+  // If playing, restart scheduler from new position
+  if(isPlaying){
+    clearTimeout(schedTimer);
+    allNotesOff();
+    startAudioTime=audioCtx.currentTime;
+    scheduleIdx=findIndexAtTime(startSongTime);
+    schedule();
   }
 }
 
 function togglePlay(){
   if(!audioCtx)initAudio();
-  if(audioCtx.state==='suspended')audioCtx.resume();
-  if(!midiPlayer)return;
-  if(isPlaying){
-    midiPlayer.pause();isPlaying=false;
-    stopProgressTimer();
-    document.getElementById('playBtn').textContent='\u25B6 PLAY';
-    document.getElementById('playBtn').classList.remove('active');
-    document.getElementById('lA').className='led led-off';
-  }else{
-    midiPlayer.play();isPlaying=true;
-    startProgressTimer();
-    document.getElementById('playBtn').textContent='\u23F8 PAUSE';
-    document.getElementById('playBtn').classList.add('active');
-    document.getElementById('lA').className='led led-on';
-  }
-}
-
-function resetCounts(){
-  noteCount=0;midiOutCount=0;progMap={};activeNotes={};
-  document.getElementById('nC').textContent='0';
-  document.getElementById('mC').textContent='0';
+  if(!timeline.length)return;
+  if(isPlaying)pausePlayback();
+  else startPlayback();
 }
 
 function stopPlayback(){
-  if(!midiPlayer)return;
-  midiPlayer.stop();isPlaying=false;
-  stopProgressTimer();
-  resetCounts();
-  if(midiOut)for(let ch=0;ch<16;ch++)midiOut.send([0xB0|ch,123,0]);
+  isPlaying=false;
+  clearTimeout(schedTimer);
+  allNotesOff(); // also clears activeNodes
+  startSongTime=0;
+  noteCount=0; midiOutCount=0; progMap={};
+  document.getElementById('nC').textContent='0';
+  document.getElementById('mC').textContent='0';
   document.getElementById('playBtn').textContent='\u25B6 PLAY';
   document.getElementById('playBtn').classList.remove('active');
   document.getElementById('pFill').style.width='0%';
@@ -484,34 +607,27 @@ function setVol(v){
   if(gainNode)gainNode.gain.value=v/100;
 }
 
-// Scrub: use skipToPercent which the library handles cleanly
+// ─── SCRUB ────────────────────────────────────────────────────────────────────
 function doSeek(clientX){
-  if(!midiPlayer||!duration)return;
+  if(!timeline.length||!duration)return;
   const r=document.getElementById('progBg').getBoundingClientRect();
   const pct=Math.max(0,Math.min(1,(clientX-r.left)/r.width));
-  const wasPlaying=isPlaying;
-  // skipToPercent works whether playing or paused
-  midiPlayer.skipToPercent(pct*100);
-  document.getElementById('pFill').style.width=(pct*100).toFixed(2)+'%';
-  document.getElementById('tEl').textContent=fmtT(duration*pct);
-  // If it was paused, keep it paused at new position
-  if(!wasPlaying)midiPlayer.pause();
+  seekTo(pct*duration);
 }
-
 const pb=document.getElementById('progBg');
 pb.addEventListener('click',e=>doSeek(e.clientX));
 pb.addEventListener('touchstart',e=>{e.preventDefault();doSeek(e.touches[0].clientX);},{passive:false});
 pb.addEventListener('touchmove',e=>{e.preventDefault();doSeek(e.touches[0].clientX);},{passive:false});
 
+// ─── FILE LOAD ────────────────────────────────────────────────────────────────
 document.getElementById('fi').addEventListener('change',function(e){
-  const f=e.target.files[0];if(!f)return;
+  const f=e.target.files[0]; if(!f)return;
   const btn=document.getElementById('fileBtn');
   btn.textContent=f.name.length>28?f.name.slice(0,26)+'...':f.name;
   document.getElementById('fileName').textContent=(f.size/1024).toFixed(1)+' KB \u00b7 tap to change';
   btn.onclick=()=>document.getElementById('fi').click();
-  const r=new FileReader();
-  r.onload=ev=>loadMidi(ev.target.result);
-  r.readAsArrayBuffer(f);
+  new FileReader().onload=ev=>loadMidi(ev.target.result),
+  (r=>{r.onload=ev=>loadMidi(ev.target.result);r.readAsArrayBuffer(f);})(new FileReader());
 });
 
 window.addEventListener('resize',resizeScope);
