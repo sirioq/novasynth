@@ -217,25 +217,41 @@ function parseMidi(buf){
 
 // ─── FLATTEN & SORT ALL EVENTS ──────────────────────────────────────────────
 function buildTimeline(parsed){
-  // Merge all track events, sorted by tick
   const all=[];
   parsed.tracks.forEach(t=>t.forEach(e=>all.push(e)));
   all.sort((a,b)=>a.tick-b.tick||(a.type==='tempo'?-1:b.type==='tempo'?1:0));
 
   // Convert ticks to seconds using tempo map
   const division=parsed.division;
-  let usPerBeat=500000; // default 120bpm
+  let usPerBeat=500000;
   let lastTick=0, lastSec=0;
   const timeline=[];
 
   all.forEach(e=>{
     const secsSinceLastTempo=((e.tick-lastTick)/division)*(usPerBeat/1000000);
     const sec=lastSec+secsSinceLastTempo;
-    if(e.type==='tempo'){
-      lastTick=e.tick; lastSec=sec; usPerBeat=e.us;
-    }
+    if(e.type==='tempo'){lastTick=e.tick; lastSec=sec; usPerBeat=e.us;}
     timeline.push({...e,sec});
   });
+
+  // Pair each noteon with its matching noteoff to get real note duration
+  const pending={};
+  timeline.forEach((e,i)=>{
+    if(e.type==='noteon'){
+      const k=e.ch+'_'+e.note;
+      if(!pending[k])pending[k]=[];
+      pending[k].push(i);
+      e.dur=0.25; // fallback
+    }
+    if(e.type==='noteoff'){
+      const k=e.ch+'_'+e.note;
+      if(pending[k]&&pending[k].length){
+        const onIdx=pending[k].shift();
+        timeline[onIdx].dur=Math.max(0.05, e.sec-timeline[onIdx].sec);
+      }
+    }
+  });
+
   return{timeline,division,initialUs:500000};
 }
 
@@ -387,12 +403,14 @@ function sendMidi(ch,note,vel,off){
 
 // Track every soundfont node so we can kill them instantly
 let activeNodes=[];
+let noteNodes={};  // key: ch_note -> active soundfont node
 
 function allNotesOff(){
   // Ramp down and stop all soundfont nodes immediately
   const t=audioCtx?audioCtx.currentTime:0;
   activeNodes.forEach(n=>{try{n.gain.setTargetAtTime(0,t,0.01);n.stop(t+0.05);}catch(e){}});
   activeNodes=[];
+  noteNodes={};
   // MIDI all-notes-off
   if(midiOut){for(let ch=0;ch<16;ch++)try{midiOut.send([0xb0|ch,123,0]);}catch(e){}}
 }
@@ -429,17 +447,22 @@ function schedule(){
     if(ev.type==='noteon'){
       noteCount++; document.getElementById('nC').textContent=noteCount;
       flashCh(ev.ch,'active');
-      if(routedChannels.has(ev.ch)&&midiOut){
-        sendMidi(ev.ch,ev.note,ev.vel,false);
+      if(routedChannels.has(ev.ch)){
+        if(midiOut)sendMidi(ev.ch,ev.note,ev.vel,false);
       } else {
         const prog=progMap[ev.ch]||(ev.ch===10?'percussion':'acoustic_grand_piano');
         const inst=instruments[prog]||instruments['acoustic_grand_piano'];
         if(inst){
           const when=Math.max(audioCtx.currentTime,evAudioTime);
-          const node=inst.play(noteNumToName(ev.note),when,{gain:(ev.vel/127)*gainNode.gain.value*1.2,duration:2});
+          // Use real note duration from MIDI data; drums get a short fixed value
+          const dur=ev.ch===10?0.08:(ev.dur||0.25);
+          // Stop any previous node on this pitch (handles retriggered notes)
+          const nk=ev.ch+'_'+ev.note;
+          if(noteNodes[nk]){try{noteNodes[nk].stop();}catch(e){}}
+          const node=inst.play(noteNumToName(ev.note),when,{gain:(ev.vel/127)*gainNode.gain.value*1.2,duration:dur});
           if(node){
+            noteNodes[nk]=node;
             activeNodes.push(node);
-            // Auto-remove from tracking when it naturally ends
             if(node.source)node.source.onended=()=>{const i=activeNodes.indexOf(node);if(i>-1)activeNodes.splice(i,1);};
           }
         }
@@ -447,7 +470,20 @@ function schedule(){
     }
 
     if(ev.type==='noteoff'){
-      if(routedChannels.has(ev.ch)&&midiOut)sendMidi(ev.ch,ev.note,0,true);
+      if(routedChannels.has(ev.ch)){
+        if(midiOut)sendMidi(ev.ch,ev.note,0,true);
+      // Stop soundfont node at the scheduled noteoff time
+      } else {
+        const nk=ev.ch+'_'+ev.note;
+        if(noteNodes[nk]){
+          try{
+            const n=noteNodes[nk];
+            if(n.gain)n.gain.setTargetAtTime(0,evAudioTime,0.015);
+            if(n.stop)n.stop(evAudioTime+0.05);
+          }catch(e){}
+          delete noteNodes[nk];
+        }
+      }
     }
   }
 
@@ -585,7 +621,7 @@ function stopPlayback(){
   clearTimeout(schedTimer);
   allNotesOff(); // also clears activeNodes
   startSongTime=0;
-  noteCount=0; midiOutCount=0; progMap={};
+  noteCount=0; midiOutCount=0; progMap={}; noteNodes={};
   document.getElementById('nC').textContent='0';
   document.getElementById('mC').textContent='0';
   document.getElementById('playBtn').textContent='\u25B6 PLAY';
