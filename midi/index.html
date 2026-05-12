@@ -384,11 +384,15 @@ function populateOutputs(){
 }
 function setStat(txt,cls){const el=document.getElementById('mStat');el.textContent=txt;el.className='midi-status '+(cls||'ms-off');}
 
-function sendMidi(ch,note,vel,off){
+function sendMidi(ch,note,vel,off,audioTime){
   if(!midiOut)return;
   const mv=parseInt(document.getElementById('mvolS').value);
   const v=off?0:Math.round(vel*(mv/127));
-  try{midiOut.send([(off?0x80:0x90)|(ch-1),note,v]);}catch(e){return;}
+  // Convert Web Audio clock time to performance.now() milliseconds for MIDI scheduling
+  const perfMs=audioTime!=null
+    ? performance.now()+(audioTime-audioCtx.currentTime)*1000
+    : performance.now();
+  try{midiOut.send([(off?0x80:0x90)|(ch-1),note,v], perfMs);}catch(e){return;}
   midiOutCount++; document.getElementById('mC').textContent=midiOutCount;
   const dn=ch===10?(DNAMES[note]||'N'+note):'N'+note;
   const ln=document.createElement('div');
@@ -448,7 +452,7 @@ function schedule(){
       noteCount++; document.getElementById('nC').textContent=noteCount;
       flashCh(ev.ch,'active');
       if(routedChannels.has(ev.ch)){
-        if(midiOut)sendMidi(ev.ch,ev.note,ev.vel,false);
+        if(midiOut)sendMidi(ev.ch,ev.note,ev.vel,false,evAudioTime);
       } else {
         const prog=progMap[ev.ch]||(ev.ch===10?'percussion':'acoustic_grand_piano');
         const inst=instruments[prog]||instruments['acoustic_grand_piano'];
@@ -471,7 +475,7 @@ function schedule(){
 
     if(ev.type==='noteoff'){
       if(routedChannels.has(ev.ch)){
-        if(midiOut)sendMidi(ev.ch,ev.note,0,true);
+        if(midiOut)sendMidi(ev.ch,ev.note,0,true,evAudioTime);
       // Stop soundfont node at the scheduled noteoff time
       } else {
         const nk=ev.ch+'_'+ev.note;
