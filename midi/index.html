@@ -123,6 +123,16 @@ input[type=range].nr::-webkit-slider-thumb{-webkit-appearance:none;width:22px;he
       <input type="range" class="nr" min="0" max="127" value="100" step="1" id="mvolS" oninput="document.getElementById('mvolV').textContent=this.value">
       <span class="ctrl-val" id="mvolV">100</span>
     </div>
+    <div class="ctrl-row" style="margin-top:8px">
+      <span class="ctrl-lbl">LOOKAHEAD</span>
+      <input type="range" class="nr" min="50" max="500" value="150" step="10" id="laS" oninput="setLookahead(this.value)">
+      <span class="ctrl-val" id="laV">150ms</span>
+    </div>
+    <div class="ctrl-row" style="margin-top:8px">
+      <span class="ctrl-lbl">MIDI OFFSET</span>
+      <input type="range" class="nr" min="-200" max="200" value="0" step="5" id="moS" oninput="setMidiOffset(this.value)">
+      <span class="ctrl-val" id="moV">0ms</span>
+    </div>
   </div>
 
   <div class="sec">
@@ -390,8 +400,8 @@ function sendMidi(ch,note,vel,off,audioTime){
   const v=off?0:Math.round(vel*(mv/127));
   // Convert Web Audio clock time to performance.now() milliseconds for MIDI scheduling
   const perfMs=audioTime!=null
-    ? performance.now()+(audioTime-audioCtx.currentTime)*1000
-    : performance.now();
+    ? performance.now()+(audioTime-audioCtx.currentTime)*1000+MIDI_OFFSET
+    : performance.now()+MIDI_OFFSET;
   try{midiOut.send([(off?0x80:0x90)|(ch-1),note,v], perfMs);}catch(e){return;}
   midiOutCount++; document.getElementById('mC').textContent=midiOutCount;
   const dn=ch===10?(DNAMES[note]||'N'+note):'N'+note;
@@ -405,23 +415,39 @@ function sendMidi(ch,note,vel,off,audioTime){
   flashCh(ch,'midi-active');
 }
 
-// Track every soundfont node so we can kill them instantly
+// Two node stores:
+// activeNodes: ALL scheduled nodes (used to cancel pre-scheduled future notes on seek/stop)
+// noteNodes:   currently-sounding node per pitch, for retriggering
 let activeNodes=[];
-let noteNodes={};  // key: ch_note -> active soundfont node
+let noteNodes={};
 
 function allNotesOff(){
-  // Ramp down and stop all soundfont nodes immediately
   const t=audioCtx?audioCtx.currentTime:0;
-  activeNodes.forEach(n=>{try{n.gain.setTargetAtTime(0,t,0.01);n.stop(t+0.05);}catch(e){}});
+  // Stop every node - both currently playing and pre-scheduled future ones
+  activeNodes.forEach(n=>{
+    try{
+      // Short ramp for already-playing notes; immediate for future ones
+      const startT=n._scheduledAt||0;
+      if(startT<=t){
+        n.gain.setTargetAtTime(0,t,0.01);
+        n.stop(t+0.05);
+      } else {
+        // Node hasn't started yet - cancel it immediately
+        n.gain.cancelScheduledValues(t);
+        n.gain.setValueAtTime(0,t);
+        n.stop(t);
+      }
+    }catch(e){}
+  });
   activeNodes=[];
   noteNodes={};
-  // MIDI all-notes-off
   if(midiOut){for(let ch=0;ch<16;ch++)try{midiOut.send([0xb0|ch,123,0]);}catch(e){}}
 }
 
 // ─── SCHEDULER ───────────────────────────────────────────────────────────────
-const LOOKAHEAD=0.15; // seconds ahead to schedule
+let LOOKAHEAD=0.15; // seconds ahead to schedule — adjustable via UI
 const TICK_MS=25;     // how often to run scheduler
+let MIDI_OFFSET=0;    // ms offset applied to all MIDI timestamps (+ve = send later)
 
 function getCurrentSongTime(){
   if(!isPlaying)return startSongTime;
@@ -460,14 +486,20 @@ function schedule(){
           const when=Math.max(audioCtx.currentTime,evAudioTime);
           // Use real note duration from MIDI data; drums get a short fixed value
           const dur=ev.ch===10?0.08:(ev.dur||0.25);
+          const sfDur=dur+1.0; // +1s release tail matches reference player
           // Stop any previous node on this pitch (handles retriggered notes)
           const nk=ev.ch+'_'+ev.note;
           if(noteNodes[nk]){try{noteNodes[nk].stop();}catch(e){}}
-          const node=inst.play(noteNumToName(ev.note),when,{gain:(ev.vel/127)*gainNode.gain.value*1.2,duration:dur});
+          const node=inst.play(noteNumToName(ev.note),when,{gain:(ev.vel/127)*gainNode.gain.value,duration:sfDur});
           if(node){
+            node._scheduledAt=when; // tag with scheduled start time
             noteNodes[nk]=node;
             activeNodes.push(node);
-            if(node.source)node.source.onended=()=>{const i=activeNodes.indexOf(node);if(i>-1)activeNodes.splice(i,1);};
+            // Clean up from activeNodes when naturally finished
+            const cleanup=()=>{const i=activeNodes.indexOf(node);if(i>-1)activeNodes.splice(i,1);delete noteNodes[nk];};
+            if(node.source)node.source.onended=cleanup;
+            // Fallback cleanup via timeout in case onended doesn't fire (Android)
+            setTimeout(cleanup,(when-audioCtx.currentTime+sfDur+0.5)*1000);
           }
         }
       }
@@ -566,7 +598,7 @@ function loadMidi(ab){
   if(timeline.some(e=>e.type==='noteon'&&e.ch===10))needed.add('percussion');
 
   Promise.all([...needed].map(n=>
-    Soundfont.instrument(audioCtx,n,{soundfont:'FluidR3_GM',destination:gainNode})
+    Soundfont.instrument(audioCtx,n,{soundfont:'MusyngKite',destination:gainNode})
       .then(i=>{instruments[n]=i;})
   )).then(()=>document.getElementById('engS').textContent='READY')
    .catch(()=>document.getElementById('engS').textContent='ERR');
@@ -645,6 +677,16 @@ function toggleLoop(){
 function setVol(v){
   document.getElementById('volV').textContent=v+'%';
   if(gainNode)gainNode.gain.value=v/100;
+}
+
+function setLookahead(v){
+  LOOKAHEAD=parseInt(v)/1000;
+  document.getElementById('laV').textContent=v+'ms';
+}
+function setMidiOffset(v){
+  MIDI_OFFSET=parseInt(v);
+  const el=document.getElementById('moV');
+  el.textContent=(v>0?'+':'')+v+'ms';
 }
 
 // ─── SCRUB ────────────────────────────────────────────────────────────────────
