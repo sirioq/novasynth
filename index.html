@@ -1123,7 +1123,10 @@ const KEY_NOTE_MAP = {
 const computerHeld = new Set();
 
 // ─── SCOPE STATE ──────────────────────────────────────────────────────────────
-let scopeMode = 'scope', scopeFrozen = false, frozenBuf = null;
+let scopeMode = 'scope', scopeFrozen = false;
+// One snapshot holds both views, captured at the same instant, so the
+// frozen waveform and its spectrum always describe the same sound.
+let frozenTime = null, frozenFreq = null;
 
 // ─── AUDIO INIT ───────────────────────────────────────────────────────────────
 function initAudio() {
@@ -1778,6 +1781,19 @@ function updateScopeXLabels() {
   }
 }
 
+function takeScopeSnapshot() {
+  if (!analyser) return;
+  frozenTime = new Uint8Array(analyser.fftSize);
+  frozenFreq = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteTimeDomainData(frozenTime);
+  analyser.getByteFrequencyData(frozenFreq);
+}
+
+function updateScopeTitle() {
+  const base = scopeMode==='fft' ? '// FFT SPECTRUM' : '// OSCILLOSCOPE';
+  document.getElementById('scope-title').textContent = base + (scopeFrozen ? '  [FROZEN]' : '');
+}
+
 function findTrigger(buf) {
   for (let i=1;i<buf.length-1;i++) { if (buf[i-1]<128&&buf[i]>=128) return i; }
   return 0;
@@ -1793,9 +1809,11 @@ function drawScope() {
     scopeCtx.beginPath(); scopeCtx.moveTo(0,f*h); scopeCtx.lineTo(w,f*h); scopeCtx.stroke();
   });
   if (!analyser) return;
+  if (scopeFrozen && !frozenTime) takeScopeSnapshot();
   if (scopeMode==='fft') {
-    const fftBuf=new Uint8Array(analyser.frequencyBinCount);
-    analyser.getByteFrequencyData(fftBuf);
+    let fftBuf;
+    if (scopeFrozen && frozenFreq) { fftBuf=frozenFreq; }
+    else { fftBuf=new Uint8Array(analyser.frequencyBinCount); analyser.getByteFrequencyData(fftBuf); }
     const nyquist=ctx.sampleRate/2, maxFreq=8000;
     const bins=Math.floor(fftBuf.length*maxFreq/nyquist);
     scopeCtx.fillStyle='rgba(0,255,231,0.5)';
@@ -1805,8 +1823,8 @@ function drawScope() {
     scopeCtx.stroke();
   } else {
     let buf;
-    if (scopeFrozen&&frozenBuf) { buf=frozenBuf; }
-    else { buf=new Uint8Array(analyser.fftSize); analyser.getByteTimeDomainData(buf); if (!scopeFrozen) frozenBuf=buf; }
+    if (scopeFrozen && frozenTime) { buf=frozenTime; }
+    else { buf=new Uint8Array(analyser.fftSize); analyser.getByteTimeDomainData(buf); }
     const triggerIdx=findTrigger(buf);
     const displaySamples=Math.min(buf.length-triggerIdx, analyser.fftSize/2);
     scopeCtx.beginPath(); scopeCtx.strokeStyle='#00ffe7';
@@ -1858,28 +1876,29 @@ function clearDisplay() { document.getElementById('note-name').textContent='---'
 function updatePolyCount() { document.getElementById('poly-count').textContent=activeNotes.size+sfActive.size; }
 
 // ─── CONTROLS ─────────────────────────────────────────────────────────────────
+// Switching views does NOT touch the freeze state, so a frozen sound can be
+// viewed as a waveform and as a spectrum.
 document.getElementById('btn-scope').addEventListener('click',()=>{
-  scopeMode='scope'; scopeFrozen=false;
+  scopeMode='scope';
   document.getElementById('btn-scope').classList.add('active');
   document.getElementById('btn-fft').classList.remove('active');
-  document.getElementById('btn-freeze').classList.remove('active');
-  document.getElementById('scope-title').textContent='// OSCILLOSCOPE';
   document.getElementById('scope-label-y').style.display='';
+  updateScopeTitle();
   updateScopeXLabels();
 });
 document.getElementById('btn-fft').addEventListener('click',()=>{
-  scopeMode='fft'; scopeFrozen=false;
+  scopeMode='fft';
   document.getElementById('btn-fft').classList.add('active');
   document.getElementById('btn-scope').classList.remove('active');
-  document.getElementById('btn-freeze').classList.remove('active');
-  document.getElementById('scope-title').textContent='// FFT SPECTRUM';
   document.getElementById('scope-label-y').style.display='none';
+  updateScopeTitle();
   updateScopeXLabels();
 });
 document.getElementById('btn-freeze').addEventListener('click',function(){
-  if (scopeMode==='fft') return;
   scopeFrozen=!scopeFrozen; this.classList.toggle('active',scopeFrozen);
-  if (scopeFrozen) { frozenBuf=new Uint8Array(analyser?analyser.fftSize:2048); if(analyser) analyser.getByteTimeDomainData(frozenBuf); }
+  if (scopeFrozen) { takeScopeSnapshot(); }
+  else { frozenTime=null; frozenFreq=null; }
+  updateScopeTitle();
 });
 
 document.getElementById('osc-vol').addEventListener('input', e => {
